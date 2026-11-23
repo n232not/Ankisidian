@@ -1,0 +1,17 @@
+{
+  "vault_path": "",
+  "target_folder": "Anki Notes",
+  "media_folder": "attachments",
+  "copy_media": true,
+  "shortcut": "Ctrl+Shift+O",
+  "show_top_menu": true,
+  "show_draggable_button": true,
+  "button_label": "📓 To Obsidian",
+  "button_position": [20, 80],
+  "open_in_obsidian_after_export": false,
+  "frontmatter_enabled": true,
+  "tag_prefix": "anki/",
+  "cloze_style": "highlight",
+  "use_wikilinks": true,
+  "file_naming": "{title}"
+}

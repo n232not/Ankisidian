@@ -1,0 +1,8 @@
+{
+  "name": "Ankisidian - Transfer Anki Notes to Obsidian",
+  "package": "ankisidian",
+  "version": "1.0.0",
+  "human_version": "1.0.0",
+  "min_point_version": 50,
+  "max_point_version": 999
+}
