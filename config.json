@@ -32,5 +32,11 @@
   "cloze_style": "highlight",
   "use_wikilinks": true,
   "max_filename_length": 240,
-  "file_naming": "{title}"
+  "file_naming": "{title}",
+  "auto_tag_on_export": true,
+  "exported_tag_name": "obsidian_exported",
+  "high_difficulty_folder_enabled": true,
+  "high_difficulty_folder_name": "High Difficulty",
+  "create_dataview_dashboard": true,
+  "dashboard_filename": "Anki Dashboard.md"
 }

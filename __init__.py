@@ -24,6 +24,7 @@ try:
         append_to_daily_note,
         export_note_data,
         extract_card_stats,
+        generate_dataview_dashboard,
         get_active_anki_note,
     )
     from .flag_dialog import AnkisidianFlagExportDialog
@@ -35,6 +36,7 @@ except (ImportError, ValueError):
         append_to_daily_note,
         export_note_data,
         extract_card_stats,
+        generate_dataview_dashboard,
         get_active_anki_note,
     )
     from flag_dialog import AnkisidianFlagExportDialog
@@ -87,6 +89,12 @@ def load_config() -> Dict[str, Any]:
         "use_wikilinks": True,
         "max_filename_length": 240,
         "file_naming": "{title}",
+        "auto_tag_on_export": True,
+        "exported_tag_name": "obsidian_exported",
+        "high_difficulty_folder_enabled": True,
+        "high_difficulty_folder_name": "High Difficulty",
+        "create_dataview_dashboard": True,
+        "dashboard_filename": "Anki Dashboard.md",
     }
 
     user_config = mw.addonManager.getConfig(ADDON_NAME) if mw and mw.addonManager else {}
@@ -189,6 +197,74 @@ def update_floating_button_state():
             _floating_button.hide()
 
 
+def tag_note_as_exported(note: Any, col: Any, config: Dict[str, Any]) -> bool:
+    """
+    Adds the configured export tag (default: 'obsidian_exported') to the Anki note.
+    Persists the change in Anki's database so the note is marked as exported.
+    """
+    if not config.get("auto_tag_on_export", True) or not note:
+        return False
+
+    tag = config.get("exported_tag_name", "obsidian_exported").strip()
+    if not tag:
+        return False
+
+    try:
+        has_tag = False
+        if hasattr(note, "has_tag"):
+            has_tag = note.has_tag(tag)
+        elif hasattr(note, "tags"):
+            has_tag = any(t.lower() == tag.lower() for t in note.tags)
+
+        if not has_tag:
+            if hasattr(note, "add_tag"):
+                note.add_tag(tag)
+            elif hasattr(note, "tags"):
+                note.tags.append(tag)
+
+            if col:
+                if hasattr(col, "update_note"):
+                    col.update_note(note)
+                elif hasattr(note, "flush"):
+                    note.flush()
+        return True
+    except Exception as e:
+        print(f"[Ankisidian] Failed to tag note as exported: {e}")
+        return False
+
+
+def is_note_already_exported(note: Any, config: Dict[str, Any]) -> bool:
+    """Checks whether note is marked as exported in Anki."""
+    if not note:
+        return False
+    tag = config.get("exported_tag_name", "obsidian_exported").strip()
+    if not tag:
+        return False
+    try:
+        if hasattr(note, "has_tag"):
+            return note.has_tag(tag)
+        elif hasattr(note, "tags"):
+            return any(t.lower() == tag.lower() for t in note.tags)
+    except Exception:
+        pass
+    return False
+
+
+def generate_dataview_dashboard_action():
+    """Generates or updates the Dataview dashboard note in Obsidian."""
+    global _config
+    res = generate_dataview_dashboard(_config, overwrite=True)
+    if res.get("success"):
+        fn = os.path.basename(res.get("file_path", "Anki Dashboard.md"))
+        tooltip(f"📊 Dataview Dashboard generated:\n{fn}", period=3000)
+    else:
+        showInfo(
+            f"Failed to generate Dataview Dashboard:\n{res.get('error')}",
+            parent=mw,
+            title="Ankisidian Dashboard",
+        )
+
+
 def transfer_current_note():
     """
     Main export routine. Transfers the currently active note to Obsidian.
@@ -253,6 +329,8 @@ def transfer_current_note():
     if _config.get("include_stats", True) and card:
         card_stats = extract_card_stats(card, mw.col)
 
+    is_repeat = is_note_already_exported(note, _config)
+
     # 5. Perform export
     res = export_note_data(
         note_id=note_id,
@@ -264,13 +342,18 @@ def transfer_current_note():
         anki_media_dir=media_dir,
         config=_config,
         card_stats=card_stats,
+        is_repeat_export=is_repeat,
     )
 
     if res.get("success"):
+        tag_note_as_exported(note, mw.col, _config)
         filename = res.get("filename", "")
         copied_media = res.get("copied_media", [])
         media_msg = f" (+{len(copied_media)} media)" if copied_media else ""
-        tooltip(f"💎 Transferred to Obsidian: {filename}{media_msg}", period=2500)
+        if res.get("is_high_difficulty"):
+            tooltip(f"🔥 Transferred to High Difficulty: {filename}{media_msg}", period=3000)
+        else:
+            tooltip(f"💎 Transferred to Obsidian: {filename}{media_msg} (tagged)", period=2500)
     else:
         showInfo(
             f"Failed to export note to Obsidian:\n{res.get('error')}",
@@ -329,6 +412,7 @@ def append_current_note_to_daily():
     )
 
     if res.get("success"):
+        tag_note_as_exported(note, mw.col, _config)
         if res.get("already_appended"):
             tooltip(f"ℹ️ Note was already in Daily Note: {res.get('filename')}", period=2500)
         else:
@@ -371,6 +455,7 @@ def on_browser_menus_init(browser: Any):
                 d_name = mw.col.decks.name(c.did) if c else "Default"
                 m_name = n.note_type().get("name", "Unknown") if hasattr(n, "note_type") else "Unknown"
                 c_stats = extract_card_stats(c, mw.col) if _config.get("include_stats", True) and c else None
+                is_rep = is_note_already_exported(n, _config)
 
                 r = export_note_data(
                     note_id=n.id,
@@ -382,8 +467,10 @@ def on_browser_menus_init(browser: Any):
                     anki_media_dir=media_dir,
                     config=_config,
                     card_stats=c_stats,
+                    is_repeat_export=is_rep,
                 )
                 if r.get("success"):
+                    tag_note_as_exported(n, mw.col, _config)
                     count += 1
             except Exception as e:
                 print(f"[Ankisidian] Error exporting note {nid}: {e}")
@@ -492,6 +579,7 @@ def init_addon():
         on_settings=open_settings_dialog,
         on_toggle_button=toggle_floating_button,
         config=_config,
+        on_create_dashboard=generate_dataview_dashboard_action,
     )
 
     # Setup Draggable Floating Button

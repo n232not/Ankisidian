@@ -339,6 +339,8 @@ def format_obsidian_markdown(
     fields: List[Tuple[str, str]],
     config: Dict[str, Any],
     card_stats: Optional[Dict[str, Any]] = None,
+    is_high_difficulty: bool = False,
+    export_count: int = 1,
 ) -> Tuple[str, str]:
     """
     Formats the note content into Obsidian Markdown.
@@ -371,6 +373,10 @@ def format_obsidian_markdown(
         escaped_model = model_name.replace('"', '\\"')
         md_parts.append(f'anki_model: "{escaped_model}"')
 
+        if is_high_difficulty:
+            md_parts.append('anki_difficulty: "High"')
+            md_parts.append(f"anki_export_count: {export_count}")
+
         # Include Spaced Repetition Stats for Dataview Queries
         if card_stats:
             if "ease" in card_stats:
@@ -397,6 +403,11 @@ def format_obsidian_markdown(
             if clean_t:
                 formatted_tags.append(f"{tag_prefix}{clean_t}" if tag_prefix and not clean_t.startswith("anki") else clean_t)
 
+        if is_high_difficulty:
+            high_diff_tag = f"{tag_prefix}high-difficulty" if tag_prefix else "high-difficulty"
+            if high_diff_tag not in formatted_tags:
+                formatted_tags.append(high_diff_tag)
+
         if formatted_tags:
             md_parts.append("tags:")
             for ft in formatted_tags:
@@ -410,6 +421,9 @@ def format_obsidian_markdown(
 
     # 2. Main Title Header
     md_parts.append(f"# {title}\n")
+
+    if is_high_difficulty:
+        md_parts.append("> [!warning] 🔥 **High Difficulty / Struggle Card** (Exported multiple times)\n")
 
     # Optional Anki Details Callout (only if explicitly enabled)
     if show_anki_details:
@@ -473,6 +487,26 @@ def format_obsidian_markdown(
     return filename, markdown_text
 
 
+def get_base_target_dir(config: Dict[str, Any]) -> Optional[str]:
+    """
+    Returns the root folder inside the Obsidian vault where Anki notes are kept.
+    """
+    vault_path = config.get("vault_path", "").strip()
+    target_subfolder = config.get("target_folder", "Anki Notes").strip()
+
+    if not vault_path and not target_subfolder:
+        return None
+
+    if os.path.isabs(target_subfolder) and not vault_path:
+        return os.path.expanduser(target_subfolder)
+
+    vault_dir = os.path.expanduser(vault_path) if vault_path else ""
+    if not vault_dir:
+        return None
+
+    return os.path.join(vault_dir, target_subfolder) if target_subfolder else vault_dir
+
+
 def resolve_target_paths(
     config: Dict[str, Any], deck_name: str = ""
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -482,22 +516,17 @@ def resolve_target_paths(
     Returns (target_folder_path, media_folder_path).
     """
     vault_path = config.get("vault_path", "").strip()
-    target_subfolder = config.get("target_folder", "Anki Notes").strip()
     media_subfolder = config.get("media_folder", "attachments").strip()
 
-    if not vault_path and not target_subfolder:
+    base_target_dir = get_base_target_dir(config)
+    if not base_target_dir:
         return None, None
 
-    # Base target directory
-    if os.path.isabs(target_subfolder) and not vault_path:
-        base_target_dir = os.path.expanduser(target_subfolder)
-        media_dir = os.path.join(base_target_dir, media_subfolder) if media_subfolder else base_target_dir
-    else:
-        vault_dir = os.path.expanduser(vault_path) if vault_path else ""
-        if not vault_dir:
-            return None, None
-        base_target_dir = os.path.join(vault_dir, target_subfolder) if target_subfolder else vault_dir
+    vault_dir = os.path.expanduser(vault_path) if vault_path else ""
+    if vault_dir:
         media_dir = os.path.join(vault_dir, media_subfolder) if media_subfolder else vault_dir
+    else:
+        media_dir = os.path.join(base_target_dir, media_subfolder) if media_subfolder else base_target_dir
 
     # Mirror deck hierarchy to folders if option is enabled
     target_dir = base_target_dir
@@ -519,13 +548,17 @@ def export_note_data(
     anki_media_dir: Optional[str],
     config: Dict[str, Any],
     card_stats: Optional[Dict[str, Any]] = None,
+    is_repeat_export: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Exports note data to Markdown file in Obsidian vault folder.
+    If the note has already been exported previously, routes it to the
+    'High Difficulty' subfolder (when enabled) and tracks export count.
     Pure python logic, decoupled from Anki UI.
     """
     target_dir, media_dir = resolve_target_paths(config, deck_name=deck_name)
-    if not target_dir:
+    base_target_dir = get_base_target_dir(config)
+    if not target_dir or not base_target_dir:
         return {
             "success": False,
             "error": "Obsidian Vault path is not configured. Please open Ankisidian Settings to set your vault folder.",
@@ -533,7 +566,71 @@ def export_note_data(
 
     os.makedirs(target_dir, exist_ok=True)
 
-    filename_base, md_content = format_obsidian_markdown(
+    # Filename determination
+    title = extract_note_title(fields, fallback_id=note_id)
+    naming_template = config.get("file_naming", "{title}")
+    max_fn_len = int(config.get("max_filename_length", 240))
+    if "{title}" in naming_template:
+        fn_raw = naming_template.format(
+            title=title,
+            deck=sanitize_filename(deck_name, max_len=60),
+            id=note_id,
+            date=datetime.datetime.now().strftime("%Y-%m-%d"),
+        )
+    else:
+        fn_raw = title
+    filename_base = sanitize_filename(fn_raw, max_len=max_fn_len)
+
+    # 1. Check for Repeat Export & High Difficulty
+    exp_tag = config.get("exported_tag_name", "obsidian_exported").strip() or "obsidian_exported"
+    has_exported_tag = (exp_tag in tags) or any(t.lower() == exp_tag.lower() for t in tags)
+
+    standard_file = os.path.join(target_dir, f"{filename_base}.md")
+    standard_file_existed = os.path.exists(standard_file)
+
+    high_diff_enabled = config.get("high_difficulty_folder_enabled", True)
+    high_diff_name = config.get("high_difficulty_folder_name", "High Difficulty").strip() or "High Difficulty"
+    high_diff_dir = os.path.join(base_target_dir, high_diff_name)
+    high_diff_file = os.path.join(high_diff_dir, f"{filename_base}.md")
+    high_diff_file_existed = os.path.exists(high_diff_file)
+
+    if is_repeat_export is not None:
+        repeat = is_repeat_export
+    else:
+        repeat = has_exported_tag or standard_file_existed or high_diff_file_existed
+
+    # Determine export count
+    export_count = 1
+    existing_file_to_check = high_diff_file if high_diff_file_existed else (standard_file if standard_file_existed else None)
+    if existing_file_to_check and os.path.exists(existing_file_to_check):
+        try:
+            with open(existing_file_to_check, "r", encoding="utf-8") as f:
+                content = f.read(1000)
+                m = re.search(r"anki_export_count:\s*(\d+)", content)
+                if m:
+                    export_count = int(m.group(1)) + 1
+                else:
+                    export_count = 2
+        except Exception:
+            export_count = 2
+    elif repeat:
+        export_count = 2
+
+    is_high_diff = high_diff_enabled and repeat
+    actual_dir = high_diff_dir if is_high_diff else target_dir
+    os.makedirs(actual_dir, exist_ok=True)
+
+    target_file = os.path.join(actual_dir, f"{filename_base}.md")
+
+    # If moving note to High Difficulty, clean up the old file in the standard directory
+    if is_high_diff and standard_file_existed and os.path.abspath(standard_file) != os.path.abspath(target_file):
+        try:
+            os.remove(standard_file)
+        except Exception as e:
+            print(f"[Ankisidian] Note moved to High Difficulty; cleanup of old file failed: {e}")
+
+    # Format Markdown
+    _, md_content = format_obsidian_markdown(
         note_id=note_id,
         card_id=card_id,
         deck_name=deck_name,
@@ -542,19 +639,17 @@ def export_note_data(
         fields=fields,
         config=config,
         card_stats=card_stats,
+        is_high_difficulty=is_high_diff,
+        export_count=export_count,
     )
 
-    # File path resolution
-    target_file = os.path.join(target_dir, f"{filename_base}.md")
-
-    # If file exists, check whether it is the same note or collision
+    # Collision check
     if os.path.exists(target_file):
         try:
             with open(target_file, "r", encoding="utf-8") as f:
                 existing_text = f.read(500)
             if f"anki_note_id: {note_id}" not in existing_text:
-                # Collision: different note with same title, append note_id
-                target_file = os.path.join(target_dir, f"{filename_base}_{note_id}.md")
+                target_file = os.path.join(actual_dir, f"{filename_base}_{note_id}.md")
         except Exception:
             pass
 
@@ -581,12 +676,171 @@ def export_note_data(
         except Exception as e:
             print(f"[Ankisidian] Failed to open file in Obsidian: {e}")
 
+    # Auto-generate Dataview dashboard note if enabled
+    if config.get("create_dataview_dashboard", True):
+        try:
+            generate_dataview_dashboard(config, overwrite=False)
+        except Exception as e:
+            print(f"[Ankisidian] Auto-creation of Dataview dashboard note failed: {e}")
+
     return {
         "success": True,
         "file_path": target_file,
         "filename": os.path.basename(target_file),
         "copied_media": copied_media,
+        "is_high_difficulty": is_high_diff,
+        "is_repeat": repeat,
+        "export_count": export_count,
     }
+
+
+def generate_dataview_dashboard(config: Dict[str, Any], overwrite: bool = True) -> Dict[str, Any]:
+    """
+    Creates or updates an Obsidian Dataview Dashboard Markdown note in the Anki cards folder.
+    Provides live tables for:
+      - High Difficulty Cards (Repeat Exports)
+      - Leeches & Struggle Cards (Lapses >= 3 or Ease <= 210%)
+      - Cards Due Soon
+      - Deck Breakdown
+      - Flagged Cards
+      - Recently Transferred Cards
+    """
+    base_dir = get_base_target_dir(config)
+    if not base_dir:
+        return {"success": False, "error": "Obsidian Vault path is not configured."}
+
+    os.makedirs(base_dir, exist_ok=True)
+    dashboard_name = config.get("dashboard_filename", "Anki Dashboard.md").strip() or "Anki Dashboard.md"
+    if not dashboard_name.endswith(".md"):
+        dashboard_name += ".md"
+
+    file_path = os.path.join(base_dir, dashboard_name)
+    if not overwrite and os.path.exists(file_path):
+        return {"success": True, "created": False, "file_path": file_path}
+
+    target_subfolder = config.get("target_folder", "Anki Notes").strip()
+    tag_prefix = config.get("tag_prefix", "anki/").strip()
+    high_diff_name = config.get("high_difficulty_folder_name", "High Difficulty").strip() or "High Difficulty"
+
+    # Dataview query folder scope
+    folder_scope = f'"{target_subfolder}"' if target_subfolder else '""'
+    clean_name = dashboard_name[:-3]
+
+    content = f"""---
+title: "Anki Obsidian Hub & Dataview Dashboard"
+tags:
+  - {tag_prefix}dashboard
+---
+
+# 📊 Anki Obsidian Hub & Dataview Dashboard
+
+> [!info] 💡 Live Dashboard (Requires Dataview Plugin)
+> This dashboard dynamically queries all Anki cards exported to your Obsidian vault using the community **Dataview** plugin.
+> If queries appear as code blocks, install Dataview via **Obsidian Settings → Community Plugins → Browse → Dataview**.
+
+---
+
+## 🔥 High Difficulty Cards (Repeat Exports)
+*Cards you have exported multiple times or marked as high difficulty because you struggled with them during reviews.*
+
+```dataview
+TABLE
+  anki_deck AS "Deck",
+  anki_lapses AS "Lapses",
+  anki_ease AS "Ease",
+  anki_interval_days AS "Interval (d)",
+  anki_export_count AS "Export Count"
+FROM {folder_scope}
+WHERE anki_difficulty = "High" OR contains(file.tags, "high-difficulty") OR contains(file.folder, "{high_diff_name}")
+SORT anki_lapses DESC, anki_export_count DESC
+```
+
+---
+
+## ⚠️ Struggle Cards & Leeches (Lapses ≥ 3 or Low Ease)
+*Cards with multiple lapses or an ease factor ≤ 210% that need extra review.*
+
+```dataview
+TABLE
+  anki_deck AS "Deck",
+  anki_lapses AS "Lapses",
+  anki_ease AS "Ease",
+  anki_due AS "Due Date"
+FROM {folder_scope}
+WHERE anki_note_id AND (anki_lapses >= 3 OR (anki_ease AND number(substring(anki_ease, 0, length(anki_ease) - 1)) <= 210))
+SORT anki_lapses DESC, anki_ease ASC
+LIMIT 30
+```
+
+---
+
+## 📅 Upcoming Reviews & Due Soon
+*Cards due for review soon.*
+
+```dataview
+TABLE
+  anki_deck AS "Deck",
+  anki_due AS "Due Date",
+  anki_interval_days AS "Interval (d)",
+  anki_state AS "State"
+FROM {folder_scope}
+WHERE anki_due AND file.name != "{clean_name}"
+SORT anki_due ASC
+LIMIT 25
+```
+
+---
+
+## 📚 Deck Breakdown
+*Overview of flashcards stored in your Obsidian vault grouped by Anki deck.*
+
+```dataview
+TABLE
+  length(rows) AS "Total Cards",
+  average(rows.anki_lapses) AS "Avg Lapses",
+  average(rows.anki_interval_days) AS "Avg Interval (d)"
+FROM {folder_scope}
+WHERE anki_deck AND file.name != "{clean_name}"
+GROUP BY anki_deck
+SORT length(rows) DESC
+```
+
+---
+
+## 🚩 Flagged Cards
+*Cards marked with flags in Anki.*
+
+```dataview
+TABLE
+  anki_flag AS "Flag",
+  anki_deck AS "Deck",
+  anki_ease AS "Ease",
+  anki_interval_days AS "Interval (d)"
+FROM {folder_scope}
+WHERE anki_flag AND anki_flag != "None" AND file.name != "{clean_name}"
+SORT anki_flag ASC
+```
+
+---
+
+## ⏱️ Recently Transferred Cards
+*The latest flashcards transferred from Anki to Obsidian.*
+
+```dataview
+TABLE
+  anki_deck AS "Deck",
+  file.mtime AS "Transferred"
+FROM {folder_scope}
+WHERE anki_note_id AND file.name != "{clean_name}"
+SORT file.mtime DESC
+LIMIT 15
+```
+"""
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    return {"success": True, "created": True, "file_path": file_path}
 
 
 def append_to_daily_note(

@@ -222,6 +222,49 @@ class AnkisidianSettingsDialog(QDialog):
 
         main_layout.addWidget(format_group)
 
+        # ----------------- Study Optimization & Sync Group -----------------
+        sync_group = QGroupBox("Study Optimization & Sync (Tags, High Difficulty, Dashboard)")
+        sync_layout = QFormLayout(sync_group)
+
+        # 1. Auto-tag on export
+        self.auto_tag_cb = QCheckBox("Add tag to note in Anki when exported to Obsidian")
+        self.auto_tag_cb.setChecked(self.config.get("auto_tag_on_export", True))
+        sync_layout.addRow("", self.auto_tag_cb)
+
+        self.exported_tag_edit = QLineEdit(self.config.get("exported_tag_name", "obsidian_exported"))
+        self.exported_tag_edit.setPlaceholderText("obsidian_exported")
+        sync_layout.addRow("Exported Tag Name:", self.exported_tag_edit)
+
+        hint_tag = QLabel("<span style='color: #6b7280; font-size: 11px;'>Allows searching <code>-tag:obsidian_exported</code> in Anki's Browser to see untransferred cards.</span>")
+        sync_layout.addRow("", hint_tag)
+
+        # 2. High Difficulty Folder for Repeat Exports
+        self.high_diff_cb = QCheckBox("Move repeat exports to 'High Difficulty' folder (struggle cards)")
+        self.high_diff_cb.setChecked(self.config.get("high_difficulty_folder_enabled", True))
+        sync_layout.addRow("", self.high_diff_cb)
+
+        self.high_diff_folder_edit = QLineEdit(self.config.get("high_difficulty_folder_name", "High Difficulty"))
+        self.high_diff_folder_edit.setPlaceholderText("High Difficulty")
+        sync_layout.addRow("High Difficulty Folder:", self.high_diff_folder_edit)
+
+        hint_diff = QLabel("<span style='color: #6b7280; font-size: 11px;'>When you export a card again, it is automatically routed to this folder and tagged as high difficulty!</span>")
+        sync_layout.addRow("", hint_diff)
+
+        # 3. Dataview Dashboard
+        self.dashboard_cb = QCheckBox("Auto-create Obsidian Dataview Dashboard note in Anki folder")
+        self.dashboard_cb.setChecked(self.config.get("create_dataview_dashboard", True))
+        sync_layout.addRow("", self.dashboard_cb)
+
+        self.dashboard_fn_edit = QLineEdit(self.config.get("dashboard_filename", "Anki Dashboard.md"))
+        self.dashboard_fn_edit.setPlaceholderText("Anki Dashboard.md")
+        sync_layout.addRow("Dashboard Note Name:", self.dashboard_fn_edit)
+
+        gen_dash_btn = QPushButton("📊 Generate / Refresh Dataview Dashboard Now")
+        gen_dash_btn.clicked.connect(self._generate_dashboard_now)
+        sync_layout.addRow("", gen_dash_btn)
+
+        main_layout.addWidget(sync_group)
+
         # ----------------- Action Buttons -----------------
         btn_box = QHBoxLayout()
         btn_box.addStretch()
@@ -296,7 +339,47 @@ class AnkisidianSettingsDialog(QDialog):
             self.config["max_filename_length"] = 240
         self.config["use_wikilinks"] = self.wikilinks_cb.isChecked()
 
+        self.config["auto_tag_on_export"] = self.auto_tag_cb.isChecked()
+        self.config["exported_tag_name"] = self.exported_tag_edit.text().strip() or "obsidian_exported"
+        self.config["high_difficulty_folder_enabled"] = self.high_diff_cb.isChecked()
+        self.config["high_difficulty_folder_name"] = self.high_diff_folder_edit.text().strip() or "High Difficulty"
+        self.config["create_dataview_dashboard"] = self.dashboard_cb.isChecked()
+        self.config["dashboard_filename"] = self.dashboard_fn_edit.text().strip() or "Anki Dashboard.md"
+
         if self.on_save_callback:
             self.on_save_callback(self.config)
 
         self.accept()
+
+    def _generate_dashboard_now(self):
+        new_vault = self.vault_edit.text().strip()
+        new_target = self.target_edit.text().strip()
+        if not new_vault and not new_target:
+            QMessageBox.warning(self, "Vault Path Missing", "Please configure your Obsidian Vault path first.")
+            return
+
+        cfg = dict(self.config)
+        cfg["vault_path"] = new_vault
+        cfg["target_folder"] = new_target or "Anki Notes"
+        cfg["dashboard_filename"] = self.dashboard_fn_edit.text().strip() or "Anki Dashboard.md"
+        cfg["high_difficulty_folder_name"] = self.high_diff_folder_edit.text().strip() or "High Difficulty"
+        cfg["tag_prefix"] = self.tag_prefix_edit.text().strip()
+
+        try:
+            from .exporter import generate_dataview_dashboard
+        except (ImportError, ValueError):
+            from exporter import generate_dataview_dashboard
+
+        res = generate_dataview_dashboard(cfg, overwrite=True)
+        if res.get("success"):
+            QMessageBox.information(
+                self,
+                "Dashboard Generated",
+                f"Dataview Dashboard created successfully at:\n{res.get('file_path')}",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Dashboard Error",
+                f"Failed to create dashboard:\n{res.get('error')}",
+            )

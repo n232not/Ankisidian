@@ -163,6 +163,13 @@ class AnkisidianFlagExportDialog(QDialog):
                 model_name = note.note_type().get("name", "Unknown") if hasattr(note, "note_type") else "Unknown"
                 card_stats = extract_card_stats(card, self.mw.col)
 
+                tag_name = self.config.get("exported_tag_name", "obsidian_exported").strip() or "obsidian_exported"
+                is_repeat = False
+                if hasattr(note, "has_tag"):
+                    is_repeat = note.has_tag(tag_name)
+                elif hasattr(note, "tags"):
+                    is_repeat = any(t.lower() == tag_name.lower() for t in note.tags)
+
                 res = export_note_data(
                     note_id=note.id,
                     card_id=card.id,
@@ -173,9 +180,20 @@ class AnkisidianFlagExportDialog(QDialog):
                     anki_media_dir=anki_media_dir,
                     config=self.config,
                     card_stats=card_stats,
+                    is_repeat_export=is_repeat,
                 )
                 if res.get("success"):
                     exported_count += 1
+                    if self.config.get("auto_tag_on_export", True) and not is_repeat:
+                        try:
+                            if hasattr(note, "add_tag"):
+                                note.add_tag(tag_name)
+                            elif hasattr(note, "tags"):
+                                note.tags.append(tag_name)
+                            if hasattr(self.mw.col, "update_note"):
+                                self.mw.col.update_note(note)
+                        except Exception:
+                            pass
             except Exception as e:
                 print(f"[Ankisidian] Error exporting note {nid}: {e}")
 

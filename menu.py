@@ -32,6 +32,7 @@ class AnkisidianMenuManager:
         on_settings: Callable[[], None],
         on_toggle_button: Callable[[], None],
         config: Dict[str, Any],
+        on_create_dashboard: Optional[Callable[[], None]] = None,
     ):
         self.mw = mw
         self.on_export = on_export
@@ -40,6 +41,7 @@ class AnkisidianMenuManager:
         self.on_settings = on_settings
         self.on_toggle_button = on_toggle_button
         self.config = config
+        self.on_create_dashboard = on_create_dashboard
 
         self.shortcut_obj: Optional[QShortcut] = None
         self.daily_shortcut_obj: Optional[QShortcut] = None
@@ -113,9 +115,15 @@ class AnkisidianMenuManager:
         flag_action.triggered.connect(self.on_flag_export)
         self.top_menu.addAction(flag_action)
 
+        # 4. Generate Dataview Dashboard
+        if self.on_create_dashboard:
+            dashboard_action = QAction("📊 Generate / Update Dataview Dashboard", self.mw)
+            dashboard_action.triggered.connect(self.on_create_dashboard)
+            self.top_menu.addAction(dashboard_action)
+
         self.top_menu.addSeparator()
 
-        # 4. Toggle Floating Button
+        # 5. Toggle Floating Button
         show_btn = self.config.get("show_draggable_button", True)
         self.toggle_button_action = QAction("Show Draggable Floating Button", self.mw)
         self.toggle_button_action.setCheckable(True)
@@ -125,7 +133,7 @@ class AnkisidianMenuManager:
 
         self.top_menu.addSeparator()
 
-        # 5. Settings Action
+        # 6. Settings Action
         settings_action = QAction("⚙️ Ankisidian Settings...", self.mw)
         settings_action.triggered.connect(self.on_settings)
         self.top_menu.addAction(settings_action)
@@ -147,6 +155,11 @@ class AnkisidianMenuManager:
         flag_action = QAction("Ankisidian: Export Cards by Flag...", self.mw)
         flag_action.triggered.connect(self.on_flag_export)
         tools_menu.addAction(flag_action)
+
+        if self.on_create_dashboard:
+            dash_action = QAction("Ankisidian: Generate Dataview Dashboard", self.mw)
+            dash_action.triggered.connect(self.on_create_dashboard)
+            tools_menu.addAction(dash_action)
 
     def update_config(self, new_config: Dict[str, Any]):
         self.config = new_config

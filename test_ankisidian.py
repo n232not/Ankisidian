@@ -21,6 +21,8 @@ from exporter import (
     extract_card_stats,
     extract_note_title,
     format_obsidian_markdown,
+    generate_dataview_dashboard,
+    get_base_target_dir,
     resolve_target_paths,
     sanitize_filename,
 )
@@ -368,6 +370,119 @@ class TestExporterEndToEnd(unittest.TestCase):
         on_state_shortcuts_will_change("review", shortcuts)
         keys = [k for k, _ in shortcuts]
         self.assertIn("5", keys)
+
+    def test_high_difficulty_repeat_export(self):
+        temp_dir = tempfile.mkdtemp()
+        vault_dir = os.path.join(temp_dir, "MyVault")
+        os.makedirs(vault_dir)
+
+        config = {
+            "vault_path": vault_dir,
+            "target_folder": "Anki Notes",
+            "copy_media": False,
+            "high_difficulty_folder_enabled": True,
+            "high_difficulty_folder_name": "High Difficulty",
+            "exported_tag_name": "obsidian_exported",
+            "create_dataview_dashboard": False,
+        }
+
+        # First export -> standard folder
+        res1 = export_note_data(
+            note_id=1001,
+            card_id=2001,
+            deck_name="Cardiology",
+            model_name="Basic",
+            tags=["medicine"],
+            fields=[("Front", "What is WPW syndrome?"), ("Back", "Pre-excitation syndrome.")],
+            anki_media_dir=None,
+            config=config,
+            is_repeat_export=False,
+        )
+        self.assertTrue(res1["success"])
+        self.assertFalse(res1["is_high_difficulty"])
+        standard_path = res1["file_path"]
+        self.assertTrue(os.path.isfile(standard_path))
+        self.assertNotIn("High Difficulty", standard_path)
+
+        # Second export (repeat) -> routes to High Difficulty folder & cleans up standard folder
+        res2 = export_note_data(
+            note_id=1001,
+            card_id=2001,
+            deck_name="Cardiology",
+            model_name="Basic",
+            tags=["medicine", "obsidian_exported"],
+            fields=[("Front", "What is WPW syndrome?"), ("Back", "Pre-excitation syndrome.")],
+            anki_media_dir=None,
+            config=config,
+            is_repeat_export=True,
+        )
+        self.assertTrue(res2["success"])
+        self.assertTrue(res2["is_high_difficulty"])
+        high_diff_path = res2["file_path"]
+        self.assertTrue(os.path.isfile(high_diff_path))
+        self.assertIn("High Difficulty", high_diff_path)
+        # Previous standard copy should be removed to avoid duplication
+        self.assertFalse(os.path.exists(standard_path))
+
+        with open(high_diff_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn('anki_difficulty: "High"', content)
+        self.assertIn("anki_export_count: 2", content)
+        self.assertIn("🔥 **High Difficulty / Struggle Card**", content)
+
+        shutil.rmtree(temp_dir)
+
+    def test_generate_dataview_dashboard(self):
+        temp_dir = tempfile.mkdtemp()
+        vault_dir = os.path.join(temp_dir, "MyVault")
+        os.makedirs(vault_dir)
+
+        config = {
+            "vault_path": vault_dir,
+            "target_folder": "Anki Notes",
+            "dashboard_filename": "Anki Dashboard.md",
+            "high_difficulty_folder_name": "High Difficulty",
+        }
+
+        res = generate_dataview_dashboard(config, overwrite=True)
+        self.assertTrue(res["success"])
+        dash_file = res["file_path"]
+        self.assertTrue(os.path.isfile(dash_file))
+
+        with open(dash_file, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("# 📊 Anki Obsidian Hub & Dataview Dashboard", content)
+        self.assertIn("```dataview", content)
+        self.assertIn('FROM "Anki Notes"', content)
+        self.assertIn('anki_difficulty = "High"', content)
+        self.assertIn("anki_lapses", content)
+        self.assertIn("High Difficulty", content)
+
+        shutil.rmtree(temp_dir)
+
+    def test_auto_tag_note(self):
+        from __init__ import is_note_already_exported, tag_note_as_exported
+
+        class DummyNote:
+            def __init__(self):
+                self.tags = ["med", "cardio"]
+
+            def has_tag(self, tag):
+                return tag.lower() in [t.lower() for t in self.tags]
+
+            def add_tag(self, tag):
+                if not self.has_tag(tag):
+                    self.tags.append(tag)
+
+        note = DummyNote()
+        config = {"auto_tag_on_export": True, "exported_tag_name": "obsidian_exported"}
+
+        self.assertFalse(is_note_already_exported(note, config))
+        tag_note_as_exported(note, col=None, config=config)
+        self.assertTrue(is_note_already_exported(note, config))
+        self.assertIn("obsidian_exported", note.tags)
 
 
 if __name__ == "__main__":

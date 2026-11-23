@@ -24,6 +24,19 @@ Transfer notes with a **keyboard shortcut**, an option in the **top menu bar**, 
 - 📊 **Spaced Repetition Review Stats (Dataview Ready)**:
   - Automatically captures review statistics: **Interval** (e.g. `21d`), **Ease Factor** (e.g. `250%`), **Reviews count** (`reps`), **Lapse count** (`lapses`), **Card State** (`New`, `Learning`, `Review`, `Suspended`), **Due Date**, and **Color Flag**.
   - Populated in YAML frontmatter (for Obsidian Dataview tables/queries) and inside the collapsible metadata section.
+- 🏷️ **Automatic Anki Export Tagging (`obsidian_exported`)**:
+  - Automatically adds the `obsidian_exported` tag to Anki notes in Anki's database upon export.
+  - Search `-tag:obsidian_exported` in Anki's Browser anytime to see all cards you haven't transferred to Obsidian yet!
+- 🔥 **High Difficulty Folder for Repeat Exports (Optional)**:
+  - If you export a card to Obsidian multiple times during reviews, Ankisidian detects it as a struggle card and automatically moves it to a dedicated `Anki Notes/High Difficulty` folder.
+  - Adds `anki_difficulty: "High"` and tracks `anki_export_count` in frontmatter, with an alert callout at the top of the note.
+- 📊 **Built-in Obsidian Dataview Dashboard (`Anki Dashboard.md`)**:
+  - Automatically creates a live interactive dashboard note in your Obsidian Anki folder with Dataview tables for:
+    - *High Difficulty Cards (Repeat Exports)*
+    - *Leeches & Struggle Cards (Lapses ≥ 3 or Ease ≤ 210%)*
+    - *Upcoming Reviews & Due Soon*
+    - *Deck Breakdown & Card Counts*
+    - *Flagged Cards & Recent Transfers*
 - 🌳 **Mirror Deck Hierarchy into Obsidian Subfolders (Optional)**:
   - Organizes notes according to your Anki decks: `Medicine::Cardiology::Arrhythmias` creates `ObsidianVault/Anki Notes/Medicine/Cardiology/Arrhythmias/Card.md`.
 - 📅 **Append to Today's Daily Note (Optional)**:

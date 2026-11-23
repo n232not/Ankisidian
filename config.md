@@ -101,3 +101,29 @@ Format of the collapsible callout:
 
 ### `metadata_position`
 `"top"` to place the minimizable section right under the title before the card text (default), or `"bottom"` to place it after the card text.
+
+### `auto_tag_on_export`
+`true` to automatically add a tag to the Anki note in Anki's database whenever it is transferred to Obsidian.
+Allows you to search `-tag:obsidian_exported` in Anki's Browser to instantly see which cards have not yet been exported.
+*Default:* `true`
+
+### `exported_tag_name`
+The tag applied to Anki notes upon export.
+*Default:* `"obsidian_exported"`
+
+### `high_difficulty_folder_enabled`
+`true` to automatically detect repeated exports (cards you struggle with and export to Obsidian more than once) and move/save them into a dedicated `High Difficulty` folder.
+Adds `anki_difficulty: "High"` and `anki_export_count: N` to the note's frontmatter.
+*Default:* `true`
+
+### `high_difficulty_folder_name`
+Subfolder name inside your Anki Notes directory for struggle / high difficulty cards.
+*Default:* `"High Difficulty"`
+
+### `create_dataview_dashboard`
+`true` to automatically generate a pre-configured Obsidian Dataview Dashboard (`Anki Dashboard.md`) in your Anki folder.
+*Default:* `true`
+
+### `dashboard_filename`
+Filename for the generated Dataview Dashboard.
+*Default:* `"Anki Dashboard.md"`
