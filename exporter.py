@@ -23,13 +23,31 @@ except (ImportError, ValueError):
     from media import copy_note_media, extract_media_references
 
 
-def sanitize_filename(name: str, max_len: int = 80) -> str:
+def clean_title_text(name: str) -> str:
+    r"""
+    Cleans a string for use as the note title inside Markdown (# Title) and YAML.
+    Removes raw HTML, collapses whitespace, but does NOT truncate length.
+    Preserves question marks and sentence punctuation while removing spaces before punctuation.
+    """
+    # Strip HTML tags
+    cleaned = re.sub(r"<[^>]+>", " ", name)
+    # Collapse newlines and tabs to spaces
+    cleaned = re.sub(r"[\n\r\t]+", " ", cleaned)
+    # Collapse consecutive whitespace
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Remove spaces before punctuation caused by stripped HTML tags
+    cleaned = re.sub(r"\s+([,.:;?!])", r"\1", cleaned)
+    return cleaned if cleaned else "Untitled Note"
+
+
+def sanitize_filename(name: str, max_len: int = 240) -> str:
     r"""
     Sanitizes string for use as a cross-platform filesystem file name.
     Removes invalid characters: / \ : * ? " < > | and control characters.
+    Defaults to 240 chars (OS filesystem max is 255 bytes) so long card titles are not cut off.
     """
     # Strip HTML tags if any remain
-    cleaned = re.sub(r"<[^>]+>", "", name)
+    cleaned = re.sub(r"<[^>]+>", " ", name)
     # Remove invalid characters
     cleaned = re.sub(r'[\\/*?:"<>|\n\r\t]', " ", cleaned)
     # Collapse consecutive whitespace
@@ -40,24 +58,276 @@ def sanitize_filename(name: str, max_len: int = 80) -> str:
     if not cleaned:
         cleaned = "Untitled Note"
 
-    if len(cleaned) > max_len:
-        cleaned = cleaned[:max_len].rstrip(" .-_")
+    if max_len and len(cleaned) > max_len:
+        # Truncate at word boundary if possible
+        truncated = cleaned[:max_len]
+        if " " in truncated:
+            cleaned = truncated.rsplit(" ", 1)[0].rstrip(" .-_")
+        else:
+            cleaned = truncated.rstrip(" .-_")
 
     return cleaned
 
 
 def extract_note_title(fields: List[Tuple[str, str]], fallback_id: int) -> str:
     """
-    Extracts a suitable title from the first non-empty field of the note.
+    Extracts the full title from the first non-empty field of the note.
+    Does not truncate so full question text is preserved inside the note.
     """
     for field_name, field_val in fields:
-        plain = re.sub(r"<[^>]+>", " ", field_val)
-        plain = re.sub(r"\{\{c\d+::(.*?)(?:::(.*?))?\}\}", r"\1", plain)
-        plain = re.sub(r"\s+", " ", plain).strip()
-        if plain:
-            return sanitize_filename(plain)
+        plain = re.sub(r"\{\{c\d+::(.*?)(?:::(.*?))?\}\}", r"\1", field_val)
+        cleaned = clean_title_text(plain)
+        if cleaned and cleaned != "Untitled Note":
+            return cleaned
 
     return f"Anki Note {fallback_id}"
+
+
+def extract_card_stats(card: Optional[Any], col: Optional[Any] = None) -> Dict[str, Any]:
+    """
+    Extracts spaced repetition review stats from an Anki card object.
+    Returns dictionary with interval, ease, reps, lapses, state, due date, flag.
+    """
+    if not card:
+        return {}
+
+    stats: Dict[str, Any] = {}
+
+    # Reps & Lapses
+    reps = getattr(card, "reps", 0)
+    lapses = getattr(card, "lapses", 0)
+    stats["reps"] = reps
+    stats["lapses"] = lapses
+
+    # Ease Factor
+    factor = getattr(card, "factor", 0)
+    if factor:
+        stats["ease"] = f"{factor // 10}%"
+        stats["ease_raw"] = factor / 1000.0
+    else:
+        stats["ease"] = "N/A (New)"
+        stats["ease_raw"] = 0
+
+    # Interval
+    ivl = getattr(card, "ivl", 0)
+    if ivl > 0:
+        stats["interval_days"] = ivl
+        stats["interval"] = f"{ivl}d"
+    elif ivl < 0:
+        stats["interval_days"] = 0
+        stats["interval"] = f"{abs(ivl)}s (learning)"
+    else:
+        stats["interval_days"] = 0
+        stats["interval"] = "New"
+
+    # Queue / State
+    queue = getattr(card, "queue", 0)
+    queue_map = {
+        -3: "Buried (User)",
+        -2: "Buried (Sched)",
+        -1: "Suspended",
+        0: "New",
+        1: "Learning",
+        2: "Review",
+        3: "Day Learning",
+        4: "Preview",
+    }
+    stats["state"] = queue_map.get(queue, "Unknown")
+
+    # Due date calculation
+    due = getattr(card, "due", 0)
+    if queue == 2:  # Review queue: due is day offset
+        try:
+            today_day = col.sched.today if col and hasattr(col, "sched") and hasattr(col.sched, "today") else 0
+            if today_day:
+                diff_days = due - today_day
+                due_date = datetime.date.today() + datetime.timedelta(days=diff_days)
+                stats["due_date"] = due_date.strftime("%Y-%m-%d")
+            else:
+                stats["due_date"] = f"Day {due}"
+        except Exception:
+            stats["due_date"] = f"Day {due}"
+    elif queue == 0:
+        stats["due_date"] = f"Position {due}"
+    elif queue in (1, 3):
+        stats["due_date"] = "Today (Learning)"
+    else:
+        stats["due_date"] = "Suspended / Buried"
+
+    # Flag
+    flags = getattr(card, "flags", 0)
+    flag_names = {1: "Red", 2: "Orange", 3: "Green", 4: "Blue", 5: "Pink", 6: "Turquoise", 7: "Purple"}
+    stats["flag"] = flag_names.get(flags, "None")
+    stats["flag_id"] = flags
+
+    return stats
+
+
+def build_metadata_section(
+    note_id: int,
+    card_id: Optional[int],
+    deck_name: str,
+    model_name: str,
+    tags: List[str],
+    tag_prefix: str,
+    now_iso: str,
+    config: Dict[str, Any],
+    card_stats: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Builds a separate overarching minimizable section containing all metadata,
+    tags, IDs, review stats, and the Anki backlink.
+    """
+    style = config.get("metadata_section_style", "callout")
+    collapsed = config.get("metadata_collapsed", True)
+
+    # Format tags for inline display
+    tag_items = []
+    if tag_prefix:
+        tag_items.append("#anki")
+    for t in tags:
+        clean_t = re.sub(r"[^\w\-_\/]", "_", t)
+        if clean_t:
+            full_tag = f"#{tag_prefix}{clean_t}" if tag_prefix and not clean_t.startswith("anki") else f"#{clean_t}"
+            if full_tag not in tag_items:
+                tag_items.append(full_tag)
+    tags_str = " ".join(tag_items) if tag_items else "#anki"
+
+    anki_link = f"[Open in Anki (nid:{note_id})](anki://search?q=nid:{note_id})"
+
+    lines = [
+        f"- **Deck:** `{deck_name}`",
+        f"- **Note Type:** `{model_name}`",
+        f"- **Note ID:** `{note_id}`",
+    ]
+    if card_id:
+        lines.append(f"- **Card ID:** `{card_id}`")
+
+    # Add spaced repetition review stats if available
+    if card_stats:
+        ivl = card_stats.get("interval", "New")
+        ease = card_stats.get("ease", "N/A")
+        reps = card_stats.get("reps", 0)
+        lapses = card_stats.get("lapses", 0)
+        state = card_stats.get("state", "New")
+        due = card_stats.get("due_date", "")
+        flag = card_stats.get("flag", "None")
+
+        lines.append(f"- **Review Stats:** Interval: `{ivl}` | Ease: `{ease}` | Reps: `{reps}` | Lapses: `{lapses}`")
+        state_str = f"`{state}`"
+        if due:
+            state_str += f" (Due: `{due}`)"
+        lines.append(f"- **Card State:** {state_str}")
+        if flag and flag != "None":
+            lines.append(f"- **Flag:** 🚩 `{flag}`")
+
+    lines.append(f"- **Tags:** {tags_str}")
+    lines.append(f"- **Created:** `{now_iso}`")
+    lines.append(f"- 🔗 {anki_link}")
+
+    if style == "details":
+        open_attr = "" if collapsed else " open"
+        inner = "\n".join(lines)
+        return f"<details{open_attr}>\n<summary>📋 Anki Details</summary>\n\n{inner}\n\n</details>"
+    else:  # Obsidian foldable callout
+        fold_char = "-" if collapsed else "+"
+        callout_lines = [f"> [!info]{fold_char} 📋 Anki Details"]
+        for line in lines:
+            callout_lines.append(f"> {line}")
+        return "\n".join(callout_lines)
+
+
+def split_fields(
+    fields: List[Tuple[str, str]], config: Dict[str, Any]
+) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
+    """
+    Separates note fields into:
+      1. Primary fields (shown directly in the note body: Front, Back, Text, Question, Answer).
+      2. Supplementary fields (collapsed in callout: Extra, Missed Questions, Lecture Notes, etc.).
+    """
+    primary_config = config.get("primary_fields", "Front, Back, Text, Question, Answer")
+    primary_names = {p.strip().lower() for p in primary_config.split(",") if p.strip()}
+    collapse_supplementary = config.get("collapse_supplementary_fields", True)
+
+    primary_fields: List[Tuple[str, str]] = []
+    supplementary_fields: List[Tuple[str, str]] = []
+
+    # Check if any field matches the primary list
+    has_primary_match = any(name.strip().lower() in primary_names for name, _ in fields)
+
+    for name, html_val in fields:
+        name_clean = name.strip()
+        name_lower = name_clean.lower()
+        val_clean = html_val.strip()
+
+        if not collapse_supplementary:
+            primary_fields.append((name_clean, html_val))
+            continue
+
+        if has_primary_match:
+            if name_lower in primary_names:
+                primary_fields.append((name_clean, html_val))
+            else:
+                # Supplementary field: only keep if not empty
+                if val_clean:
+                    supplementary_fields.append((name_clean, html_val))
+        else:
+            # Fallback for notes without standard names: first 1 or 2 fields are primary
+            cutoff = 2 if len(fields) >= 2 else 1
+            if len(primary_fields) < cutoff:
+                primary_fields.append((name_clean, html_val))
+            else:
+                if val_clean:
+                    supplementary_fields.append((name_clean, html_val))
+
+    return primary_fields, supplementary_fields
+
+
+def build_supplementary_callout(
+    supplementary_fields: List[Tuple[str, str]],
+    note_id: int,
+    config: Dict[str, Any],
+) -> str:
+    """
+    Builds a collapsible callout grouping all supplementary fields like
+    Extra, Missed Questions, Lecture Notes, etc.
+    """
+    cloze_style = config.get("cloze_style", "highlight")
+    use_wikilinks = config.get("use_wikilinks", True)
+    callout_title = config.get("supplementary_callout_title", "📑 Extra & Notes").strip() or "📑 Extra & Notes"
+    callout_type = config.get("supplementary_callout_type", "note").strip() or "note"
+    collapsed = config.get("metadata_collapsed", True)
+    fold_char = "-" if collapsed else "+"
+    style = config.get("metadata_section_style", "callout")
+
+    rendered_items: List[Tuple[str, str]] = []
+    for f_name, f_html in supplementary_fields:
+        f_md = anki_html_to_markdown(f_html, cloze_style=cloze_style, use_wikilinks=use_wikilinks)
+        if f_md:
+            rendered_items.append((f_name, f_md))
+
+    if not rendered_items:
+        return ""
+
+    anki_link = f"[Open in Anki (nid:{note_id})](anki://search?q=nid:{note_id})"
+
+    if style == "details":
+        open_attr = "" if collapsed else " open"
+        inner_parts = []
+        for f_name, f_md in rendered_items:
+            inner_parts.append(f"<h4>{f_name}</h4>\n\n{f_md}\n")
+        inner_parts.append(f"\n<hr>\n<p><a href=\"anki://search?q=nid:{note_id}\">🔗 {anki_link}</a></p>")
+        return f"<details{open_attr}>\n<summary>{callout_title}</summary>\n\n" + "\n".join(inner_parts) + "\n</details>"
+    else:  # Obsidian foldable callout
+        lines = [f"> [!{callout_type}]{fold_char} {callout_title}"]
+        for f_name, f_md in rendered_items:
+            lines.append(f"> #### {f_name}")
+            for m_line in f_md.split("\n"):
+                lines.append(f"> {m_line}" if m_line.strip() else ">")
+            lines.append(">")
+        lines.append("> ---")
+        lines.append(f"> 🔗 {anki_link}")
+        return "\n".join(lines)
 
 
 def format_obsidian_markdown(
@@ -68,23 +338,27 @@ def format_obsidian_markdown(
     tags: List[str],
     fields: List[Tuple[str, str]],
     config: Dict[str, Any],
+    card_stats: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str]:
     """
     Formats the note content into Obsidian Markdown.
-    Returns (filename_without_ext, markdown_content).
+    Card text (Front/Back/Text) stays clean in the note body.
+    Supplementary fields (Extra, Missed Questions, Lecture Notes) go into a collapsible callout.
+    Anki metadata is stored cleanly in YAML frontmatter.
     """
     title = extract_note_title(fields, fallback_id=note_id)
     cloze_style = config.get("cloze_style", "highlight")
     use_wikilinks = config.get("use_wikilinks", True)
     tag_prefix = config.get("tag_prefix", "anki/")
     frontmatter_enabled = config.get("frontmatter_enabled", True)
+    show_anki_details = config.get("show_anki_details_callout", False)
 
     now_iso = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Prepare Markdown content parts
     md_parts: List[str] = []
 
-    # 1. Frontmatter
+    # 1. Frontmatter (All metadata lives cleanly here)
     if frontmatter_enabled:
         md_parts.append("---")
         escaped_title = title.replace('"', '\\"')
@@ -96,6 +370,23 @@ def format_obsidian_markdown(
         md_parts.append(f'anki_deck: "{escaped_deck}"')
         escaped_model = model_name.replace('"', '\\"')
         md_parts.append(f'anki_model: "{escaped_model}"')
+
+        # Include Spaced Repetition Stats for Dataview Queries
+        if card_stats:
+            if "ease" in card_stats:
+                md_parts.append(f'anki_ease: "{card_stats["ease"]}"')
+            if "interval_days" in card_stats:
+                md_parts.append(f'anki_interval_days: {card_stats["interval_days"]}')
+            if "reps" in card_stats:
+                md_parts.append(f'anki_reps: {card_stats["reps"]}')
+            if "lapses" in card_stats:
+                md_parts.append(f'anki_lapses: {card_stats["lapses"]}')
+            if "state" in card_stats:
+                md_parts.append(f'anki_state: "{card_stats["state"]}"')
+            if "due_date" in card_stats:
+                md_parts.append(f'anki_due: "{card_stats["due_date"]}"')
+            if card_stats.get("flag") and card_stats["flag"] != "None":
+                md_parts.append(f'anki_flag: "{card_stats["flag"]}"')
 
         # Tags
         formatted_tags = []
@@ -120,8 +411,26 @@ def format_obsidian_markdown(
     # 2. Main Title Header
     md_parts.append(f"# {title}\n")
 
-    # 3. Note Fields
-    for field_name, field_html in fields:
+    # Optional Anki Details Callout (only if explicitly enabled)
+    if show_anki_details:
+        meta_sec = build_metadata_section(
+            note_id=note_id,
+            card_id=card_id,
+            deck_name=deck_name,
+            model_name=model_name,
+            tags=tags,
+            tag_prefix=tag_prefix,
+            now_iso=now_iso,
+            config=config,
+            card_stats=card_stats,
+        )
+        md_parts.append(f"{meta_sec}\n")
+
+    # 3. Split Fields into Primary (Card Text) and Supplementary (Extra, Missed Questions, etc.)
+    primary_fields, supplementary_fields = split_fields(fields, config)
+
+    # 4. Render Primary Fields (Core Card Text)
+    for field_name, field_html in primary_fields:
         field_md = anki_html_to_markdown(
             field_html, cloze_style=cloze_style, use_wikilinks=use_wikilinks
         )
@@ -131,31 +440,45 @@ def format_obsidian_markdown(
         else:
             md_parts.append("*(empty)*\n")
 
-    # 4. Anki Quick Link / Backlink
-    md_parts.append("\n---\n")
-    md_parts.append(f"> 🔗 [Open in Anki (nid:{note_id})](anki://search?q=nid:{note_id})\n")
+    # 5. Render Supplementary Fields in Collapsible Callout
+    if supplementary_fields:
+        sup_callout = build_supplementary_callout(
+            supplementary_fields=supplementary_fields,
+            note_id=note_id,
+            config=config,
+        )
+        if sup_callout:
+            md_parts.append(f"\n{sup_callout}\n")
+    else:
+        # If no supplementary fields exist, provide a clean link at the end
+        md_parts.append("\n---\n")
+        md_parts.append(f"> 🔗 [Open in Anki (nid:{note_id})](anki://search?q=nid:{note_id})\n")
 
     markdown_text = "\n".join(md_parts)
 
     # Filename determination
     naming_template = config.get("file_naming", "{title}")
+    max_fn_len = int(config.get("max_filename_length", 240))
     if "{title}" in naming_template:
         filename = naming_template.format(
             title=title,
-            deck=sanitize_filename(deck_name, max_len=30),
+            deck=sanitize_filename(deck_name, max_len=60),
             id=note_id,
             date=datetime.datetime.now().strftime("%Y-%m-%d"),
         )
     else:
         filename = title
 
-    filename = sanitize_filename(filename)
+    filename = sanitize_filename(filename, max_len=max_fn_len)
     return filename, markdown_text
 
 
-def resolve_target_paths(config: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+def resolve_target_paths(
+    config: Dict[str, Any], deck_name: str = ""
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Resolves the target destination folder and media attachments folder.
+    Supports mirroring Anki's subdeck hierarchy if configured.
     Returns (target_folder_path, media_folder_path).
     """
     vault_path = config.get("vault_path", "").strip()
@@ -165,20 +488,23 @@ def resolve_target_paths(config: Dict[str, Any]) -> Tuple[Optional[str], Optiona
     if not vault_path and not target_subfolder:
         return None, None
 
-    # If target_subfolder is an absolute path and vault_path is empty:
+    # Base target directory
     if os.path.isabs(target_subfolder) and not vault_path:
-        target_dir = os.path.expanduser(target_subfolder)
-        media_dir = os.path.join(target_dir, media_subfolder) if media_subfolder else target_dir
-        return target_dir, media_dir
+        base_target_dir = os.path.expanduser(target_subfolder)
+        media_dir = os.path.join(base_target_dir, media_subfolder) if media_subfolder else base_target_dir
+    else:
+        vault_dir = os.path.expanduser(vault_path) if vault_path else ""
+        if not vault_dir:
+            return None, None
+        base_target_dir = os.path.join(vault_dir, target_subfolder) if target_subfolder else vault_dir
+        media_dir = os.path.join(vault_dir, media_subfolder) if media_subfolder else vault_dir
 
-    # Normal case: vault_path is set
-    vault_dir = os.path.expanduser(vault_path) if vault_path else ""
-    if not vault_dir:
-        # User only gave a relative folder, fallback to ~/Documents/<folder> or prompt
-        return None, None
-
-    target_dir = os.path.join(vault_dir, target_subfolder) if target_subfolder else vault_dir
-    media_dir = os.path.join(vault_dir, media_subfolder) if media_subfolder else vault_dir
+    # Mirror deck hierarchy to folders if option is enabled
+    target_dir = base_target_dir
+    if config.get("mirror_deck_hierarchy", False) and deck_name:
+        parts = [sanitize_filename(p) for p in deck_name.split("::") if sanitize_filename(p)]
+        if parts:
+            target_dir = os.path.join(base_target_dir, *parts)
 
     return target_dir, media_dir
 
@@ -192,12 +518,13 @@ def export_note_data(
     fields: List[Tuple[str, str]],
     anki_media_dir: Optional[str],
     config: Dict[str, Any],
+    card_stats: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Exports note data to Markdown file in Obsidian vault folder.
     Pure python logic, decoupled from Anki UI.
     """
-    target_dir, media_dir = resolve_target_paths(config)
+    target_dir, media_dir = resolve_target_paths(config, deck_name=deck_name)
     if not target_dir:
         return {
             "success": False,
@@ -214,6 +541,7 @@ def export_note_data(
         tags=tags,
         fields=fields,
         config=config,
+        card_stats=card_stats,
     )
 
     # File path resolution
@@ -257,6 +585,113 @@ def export_note_data(
         "success": True,
         "file_path": target_file,
         "filename": os.path.basename(target_file),
+        "copied_media": copied_media,
+    }
+
+
+def append_to_daily_note(
+    note_id: int,
+    card_id: Optional[int],
+    deck_name: str,
+    model_name: str,
+    tags: List[str],
+    fields: List[Tuple[str, str]],
+    card_stats: Optional[Dict[str, Any]],
+    anki_media_dir: Optional[str],
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Appends the active card into today's Obsidian Daily Note under a review heading.
+    """
+    vault_path = config.get("vault_path", "").strip()
+    if not vault_path:
+        return {"success": False, "error": "Vault path not configured"}
+
+    vault_dir = os.path.expanduser(vault_path)
+    daily_subfolder = config.get("daily_note_folder", "Daily Notes").strip()
+    daily_format = config.get("daily_note_format", "%Y-%m-%d").strip() or "%Y-%m-%d"
+    heading = config.get("daily_note_heading", "## Anki Reviews").strip() or "## Anki Reviews"
+
+    target_dir = os.path.join(vault_dir, daily_subfolder) if daily_subfolder else vault_dir
+    os.makedirs(target_dir, exist_ok=True)
+
+    today = datetime.date.today()
+    date_filename = today.strftime(daily_format)
+    daily_file = os.path.join(target_dir, f"{date_filename}.md")
+
+    title = extract_note_title(fields, fallback_id=note_id)
+    cloze_style = config.get("cloze_style", "highlight")
+    use_wikilinks = config.get("use_wikilinks", True)
+
+    # Split fields into primary and supplementary
+    primary_fields, supplementary_fields = split_fields(fields, config)
+
+    entry_parts = [
+        f"### {title}",
+        f"> 📚 *{deck_name}*",
+        "",
+    ]
+
+    # Render primary fields
+    for f_name, f_html in primary_fields:
+        f_md = anki_html_to_markdown(f_html, cloze_style=cloze_style, use_wikilinks=use_wikilinks)
+        if f_md:
+            entry_parts.append(f"**{f_name}:**\n{f_md}\n")
+
+    # Render supplementary callout (Extra, Missed Questions, etc.)
+    if supplementary_fields:
+        sup_callout = build_supplementary_callout(
+            supplementary_fields=supplementary_fields,
+            note_id=note_id,
+            config=config,
+        )
+        if sup_callout:
+            entry_parts.append(f"\n{sup_callout}\n")
+    else:
+        entry_parts.append(f"> 🔗 [Open in Anki (nid:{note_id})](anki://search?q=nid:{note_id})")
+
+    entry_content = "\n".join(entry_parts).strip()
+
+    # Read existing content if file exists
+    existing_content = ""
+    if os.path.exists(daily_file):
+        with open(daily_file, "r", encoding="utf-8") as f:
+            existing_content = f.read()
+
+        if f"nid:{note_id}" in existing_content:
+            return {
+                "success": True,
+                "already_appended": True,
+                "file_path": daily_file,
+                "filename": os.path.basename(daily_file),
+            }
+
+    # Format output
+    if not existing_content.strip():
+        new_content = f"# {date_filename}\n\n{heading}\n\n{entry_content}\n"
+    else:
+        if heading in existing_content:
+            parts = existing_content.split(heading, 1)
+            new_content = parts[0] + heading + "\n\n" + entry_content + "\n" + parts[1]
+        else:
+            new_content = existing_content.rstrip() + f"\n\n{heading}\n\n{entry_content}\n"
+
+    with open(daily_file, "w", encoding="utf-8") as f:
+        f.write(new_content)
+
+    # Copy media
+    media_subfolder = config.get("media_folder", "attachments").strip()
+    media_dir = os.path.join(vault_dir, media_subfolder) if media_subfolder else vault_dir
+    copied_media = []
+    if config.get("copy_media", True) and anki_media_dir:
+        media_refs = extract_media_references([v for _, v in fields])
+        if media_refs:
+            copied_media = copy_note_media(media_refs, anki_media_dir, media_dir)
+
+    return {
+        "success": True,
+        "file_path": daily_file,
+        "filename": os.path.basename(daily_file),
         "copied_media": copied_media,
     }
 

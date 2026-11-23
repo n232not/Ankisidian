@@ -16,9 +16,12 @@ from html_to_markdown import (
     convert_sound_tags,
 )
 from exporter import (
+    append_to_daily_note,
     export_note_data,
+    extract_card_stats,
     extract_note_title,
     format_obsidian_markdown,
+    resolve_target_paths,
     sanitize_filename,
 )
 from media import copy_note_media, extract_media_references
@@ -127,14 +130,24 @@ class TestSanitizeAndTitle(unittest.TestCase):
             ("Back", "Paris"),
         ]
         title = extract_note_title(fields, fallback_id=123)
-        self.assertEqual(title, "What is the capital of France")
+        self.assertEqual(title, "What is the capital of France?")
+        self.assertEqual(sanitize_filename(title), "What is the capital of France")
 
         # Cloze title
         cloze_fields = [
             ("Text", "{{c1::Mitochondria}} is the powerhouse of the cell."),
         ]
         cloze_title = extract_note_title(cloze_fields, fallback_id=456)
-        self.assertEqual(cloze_title, "Mitochondria is the powerhouse of the cell")
+        self.assertEqual(cloze_title, "Mitochondria is the powerhouse of the cell.")
+        self.assertEqual(sanitize_filename(cloze_title), "Mitochondria is the powerhouse of the cell")
+
+    def test_long_title_not_truncated(self):
+        long_q = "What is the primary mechanism of action of nonsteroidal anti-inflammatory drugs (NSAIDs) regarding cyclooxygenase-1 and cyclooxygenase-2 inhibition and prostaglandin synthesis?"
+        fields = [("Front", long_q), ("Back", "Inhibition of COX")]
+        title = extract_note_title(fields, fallback_id=1)
+        self.assertEqual(title, long_q)
+        fn = sanitize_filename(long_q, max_len=240)
+        self.assertGreater(len(fn), 100)
 
 
 class TestExporterEndToEnd(unittest.TestCase):
@@ -158,6 +171,9 @@ class TestExporterEndToEnd(unittest.TestCase):
         fields = [
             ("Front", "<b>Question:</b> What is Python?"),
             ("Back", "Python is an interpreted, high-level programming language."),
+            ("Extra", "Created by Guido van Rossum in 1991."),
+            ("Missed Questions", "Difference between interpreted and compiled?"),
+            ("Lecture Notes", "Covered in CS101 Week 2."),
         ]
 
         res = export_note_data(
@@ -178,23 +194,180 @@ class TestExporterEndToEnd(unittest.TestCase):
         with open(exported_file, "r", encoding="utf-8") as f:
             content = f.read()
 
-        # Check frontmatter
+        # Check frontmatter contains all metadata
         self.assertIn("---", content)
         self.assertIn("anki_note_id: 1700100200300", content)
         self.assertIn('anki_deck: "Computer Science::Languages"', content)
         self.assertIn("tags:", content)
         self.assertIn("- anki/programming", content)
 
-        # Check fields
+        # Body should NOT contain redundant Anki Details callout
+        self.assertNotIn("📋 Anki Details", content)
+
+        # Check pure card fields in main body
         self.assertIn("## Front", content)
         self.assertIn("**Question:** What is Python?", content)
         self.assertIn("## Back", content)
         self.assertIn("Python is an interpreted, high-level programming language.", content)
 
-        # Check backlink
+        # Check supplementary fields callout (Extra, Missed Questions, Lecture Notes)
+        self.assertIn("> [!note]- 📑 Extra & Notes", content)
+        self.assertIn("> #### Extra", content)
+        self.assertIn("Created by Guido van Rossum in 1991.", content)
+        self.assertIn("> #### Missed Questions", content)
+        self.assertIn("Difference between interpreted and compiled?", content)
+        self.assertIn("> #### Lecture Notes", content)
+        self.assertIn("Covered in CS101 Week 2.", content)
+
+        # Check Anki backlink inside callout
         self.assertIn("anki://search?q=nid:1700100200300", content)
 
         shutil.rmtree(temp_dir)
+
+    def test_card_stats_extraction(self):
+        class DummyCard:
+            reps = 8
+            lapses = 2
+            factor = 2500
+            ivl = 30
+            queue = 2
+            due = 150
+            flags = 1  # Red
+
+        card = DummyCard()
+        stats = extract_card_stats(card)
+        self.assertEqual(stats["reps"], 8)
+        self.assertEqual(stats["lapses"], 2)
+        self.assertEqual(stats["ease"], "250%")
+        self.assertEqual(stats["interval_days"], 30)
+        self.assertEqual(stats["state"], "Review")
+        self.assertEqual(stats["flag"], "Red")
+
+        # Test inclusion in formatted markdown (stats in frontmatter)
+        _, md = format_obsidian_markdown(
+            note_id=123,
+            card_id=456,
+            deck_name="Cardiology",
+            model_name="Basic",
+            tags=["med"],
+            fields=[("Front", "ECG"), ("Back", "Wave")],
+            config={"show_anki_details_callout": True},
+            card_stats=stats,
+        )
+        self.assertIn('anki_ease: "250%"', md)
+        self.assertIn("anki_interval_days: 30", md)
+        self.assertIn('anki_flag: "Red"', md)
+        self.assertIn("Interval: `30d` | Ease: `250%` | Reps: `8` | Lapses: `2`", md)
+        self.assertIn("🚩 `Red`", md)
+
+    def test_mirror_deck_hierarchy(self):
+        config = {
+            "vault_path": "/test/vault",
+            "target_folder": "Anki Cards",
+            "mirror_deck_hierarchy": True,
+        }
+        target_dir, _ = resolve_target_paths(config, deck_name="Medicine::Cardiology::Arrhythmias")
+        self.assertTrue(target_dir.endswith(os.path.join("Anki Cards", "Medicine", "Cardiology", "Arrhythmias")))
+
+        # Test disabled
+        config["mirror_deck_hierarchy"] = False
+        target_dir_flat, _ = resolve_target_paths(config, deck_name="Medicine::Cardiology::Arrhythmias")
+        self.assertTrue(target_dir_flat.endswith("Anki Cards"))
+
+    def test_append_to_daily_note(self):
+        temp_dir = tempfile.mkdtemp()
+        vault_dir = os.path.join(temp_dir, "MyVault")
+        os.makedirs(vault_dir)
+
+        config = {
+            "vault_path": vault_dir,
+            "daily_note_folder": "Daily Notes",
+            "daily_note_format": "%Y-%m-%d",
+            "daily_note_heading": "## Anki Reviews",
+            "copy_media": False,
+        }
+
+        res = append_to_daily_note(
+            note_id=777,
+            card_id=888,
+            deck_name="German::Vocab",
+            model_name="Basic",
+            tags=["vocab"],
+            fields=[("Front", "der Hund"), ("Back", "the dog")],
+            card_stats={"interval": "10d", "ease": "240%"},
+            anki_media_dir=None,
+            config=config,
+        )
+
+        self.assertTrue(res["success"])
+        daily_file = res["file_path"]
+        self.assertTrue(os.path.isfile(daily_file))
+
+        with open(daily_file, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("## Anki Reviews", content)
+        self.assertIn("### der Hund", content)
+        self.assertIn("the dog", content)
+        self.assertIn("German::Vocab", content)
+        self.assertIn("anki://search?q=nid:777", content)
+
+        # Test duplicate append prevention
+        res2 = append_to_daily_note(
+            note_id=777,
+            card_id=888,
+            deck_name="German::Vocab",
+            model_name="Basic",
+            tags=["vocab"],
+            fields=[("Front", "der Hund"), ("Back", "the dog")],
+            card_stats=None,
+            anki_media_dir=None,
+            config=config,
+        )
+        self.assertTrue(res2["already_appended"])
+
+        shutil.rmtree(temp_dir)
+
+    def test_details_style_metadata(self):
+        temp_dir = tempfile.mkdtemp()
+        vault_dir = os.path.join(temp_dir, "MyVault")
+        os.makedirs(vault_dir)
+
+        config = {
+            "vault_path": vault_dir,
+            "target_folder": "Anki Cards",
+            "metadata_section_style": "details",
+            "metadata_collapsed": True,
+            "copy_media": False,
+        }
+
+        res = export_note_data(
+            note_id=999,
+            card_id=None,
+            deck_name="TestDeck",
+            model_name="Basic",
+            tags=["test"],
+            fields=[("Front", "Q"), ("Back", "A"), ("Extra", "Extra Notes")],
+            anki_media_dir=None,
+            config=config,
+        )
+
+        with open(res["file_path"], "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("<details>\n<summary>📑 Extra & Notes</summary>", content)
+        self.assertIn("</details>", content)
+        self.assertIn("Extra Notes", content)
+        self.assertIn("## Front\n\nQ\n\n## Back\n\nA", content)
+
+        shutil.rmtree(temp_dir)
+
+    def test_reviewer_quick_key_hook(self):
+        from __init__ import on_state_shortcuts_will_change
+        shortcuts = [("1", lambda: None), ("2", lambda: None)]
+        on_state_shortcuts_will_change("review", shortcuts)
+        keys = [k for k, _ in shortcuts]
+        self.assertIn("5", keys)
 
 
 if __name__ == "__main__":

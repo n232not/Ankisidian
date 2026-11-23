@@ -83,6 +83,24 @@ class AnkisidianSettingsDialog(QDialog):
         self.copy_media_cb.setChecked(self.config.get("copy_media", True))
         vault_layout.addRow("", self.copy_media_cb)
 
+        # Mirror Deck Hierarchy
+        self.mirror_deck_cb = QCheckBox("Mirror Anki subdeck hierarchy into Obsidian subfolders")
+        self.mirror_deck_cb.setChecked(self.config.get("mirror_deck_hierarchy", False))
+        vault_layout.addRow("", self.mirror_deck_cb)
+
+        # Daily Note Integration
+        self.daily_note_cb = QCheckBox("Enable 'Append to Daily Note' feature")
+        self.daily_note_cb.setChecked(self.config.get("daily_note_enabled", True))
+        vault_layout.addRow("", self.daily_note_cb)
+
+        self.daily_folder_edit = QLineEdit(self.config.get("daily_note_folder", "Daily Notes"))
+        self.daily_folder_edit.setPlaceholderText("Daily Notes")
+        vault_layout.addRow("Daily Notes Folder:", self.daily_folder_edit)
+
+        self.daily_heading_edit = QLineEdit(self.config.get("daily_note_heading", "## Anki Reviews"))
+        self.daily_heading_edit.setPlaceholderText("## Anki Reviews")
+        vault_layout.addRow("Daily Note Heading:", self.daily_heading_edit)
+
         # Open in Obsidian after export
         self.open_obsidian_cb = QCheckBox("Open note in Obsidian immediately after export")
         self.open_obsidian_cb.setChecked(self.config.get("open_in_obsidian_after_export", False))
@@ -91,18 +109,34 @@ class AnkisidianSettingsDialog(QDialog):
         main_layout.addWidget(vault_group)
 
         # ----------------- Interface & Controls Group -----------------
-        ui_group = QGroupBox("Shortcuts & Draggable Button")
+        ui_group = QGroupBox("Keybinds & Draggable Floating Button")
         ui_layout = QFormLayout(ui_group)
 
         # Keybind
         self.shortcut_edit = QLineEdit(self.config.get("shortcut", "Ctrl+Shift+O"))
         self.shortcut_edit.setPlaceholderText("e.g. Ctrl+Shift+O or Cmd+Shift+O")
-        ui_layout.addRow("Keyboard Shortcut:", self.shortcut_edit)
+        ui_layout.addRow("Transfer Keybind:", self.shortcut_edit)
+
+        # Reviewer Quick Key (e.g. 5)
+        self.rev_key_edit = QLineEdit(self.config.get("reviewer_quick_key", "5"))
+        self.rev_key_edit.setPlaceholderText("e.g. 5")
+        ui_layout.addRow("Reviewer Quick Key (e.g. 5):", self.rev_key_edit)
+
+        hint_rev = QLabel("<span style='color: #6b7280; font-size: 11px;'>Press this single key (e.g. <b>5</b>) during review to instantly export without any modifier keys!</span>")
+        ui_layout.addRow("", hint_rev)
+
+        # Daily Note Keybind
+        self.daily_shortcut_edit = QLineEdit(self.config.get("daily_note_shortcut", "Ctrl+Alt+D"))
+        self.daily_shortcut_edit.setPlaceholderText("e.g. Ctrl+Alt+D or Cmd+Option+D")
+        ui_layout.addRow("Daily Note Keybind:", self.daily_shortcut_edit)
 
         # Draggable Button Toggle
         self.show_button_cb = QCheckBox("Show floating draggable button on Anki window")
         self.show_button_cb.setChecked(self.config.get("show_draggable_button", True))
         ui_layout.addRow("", self.show_button_cb)
+
+        hint_label = QLabel("<span style='color: #6b7280; font-size: 11px;'>Turn this OFF to use only the keybind without any on-screen button.</span>")
+        ui_layout.addRow("", hint_label)
 
         # Button Label
         self.btn_label_edit = QLineEdit(self.config.get("button_label", "📓 To Obsidian"))
@@ -116,8 +150,13 @@ class AnkisidianSettingsDialog(QDialog):
         main_layout.addWidget(ui_group)
 
         # ----------------- Markdown & Formatting Group -----------------
-        format_group = QGroupBox("Formatting & Frontmatter")
+        format_group = QGroupBox("Formatting & Metadata")
         format_layout = QFormLayout(format_group)
+
+        # Spaced Repetition Stats
+        self.include_stats_cb = QCheckBox("Include spaced repetition review stats (Interval, Ease, Reps, Lapses, Due)")
+        self.include_stats_cb.setChecked(self.config.get("include_stats", True))
+        format_layout.addRow("", self.include_stats_cb)
 
         # Cloze Format Dropdown
         self.cloze_combo = QComboBox()
@@ -137,10 +176,44 @@ class AnkisidianSettingsDialog(QDialog):
         self.frontmatter_cb.setChecked(self.config.get("frontmatter_enabled", True))
         format_layout.addRow("", self.frontmatter_cb)
 
+        # Minimizable Supplementary Fields Callout
+        self.collapse_extra_cb = QCheckBox("Collapse supplementary fields (Extra, Missed Questions, Lecture Notes) into callout")
+        self.collapse_extra_cb.setChecked(self.config.get("collapse_supplementary_fields", True))
+        format_layout.addRow("", self.collapse_extra_cb)
+
+        self.primary_fields_edit = QLineEdit(self.config.get("primary_fields", "Front, Back, Text, Question, Answer"))
+        self.primary_fields_edit.setPlaceholderText("Front, Back, Text, Question, Answer")
+        format_layout.addRow("Primary Fields (Direct Body):", self.primary_fields_edit)
+
+        self.callout_title_edit = QLineEdit(self.config.get("supplementary_callout_title", "📑 Extra & Notes"))
+        self.callout_title_edit.setPlaceholderText("📑 Extra & Notes")
+        format_layout.addRow("Callout Header Title:", self.callout_title_edit)
+
+        self.meta_style_combo = QComboBox()
+        self.meta_style_combo.addItem("Obsidian Callout: > [!note]- 📑 Extra & Notes", "callout")
+        self.meta_style_combo.addItem("HTML Details: <details><summary>", "details")
+        style_idx = self.meta_style_combo.findData(self.config.get("metadata_section_style", "callout"))
+        if style_idx >= 0:
+            self.meta_style_combo.setCurrentIndex(style_idx)
+        format_layout.addRow("Callout Syntax Style:", self.meta_style_combo)
+
+        self.meta_collapsed_cb = QCheckBox("Start supplementary callout minimized (collapsed) by default")
+        self.meta_collapsed_cb.setChecked(self.config.get("metadata_collapsed", True))
+        format_layout.addRow("", self.meta_collapsed_cb)
+
+        self.anki_details_cb = QCheckBox("Include redundant 'Anki Details' metadata callout in note body")
+        self.anki_details_cb.setChecked(self.config.get("show_anki_details_callout", False))
+        format_layout.addRow("", self.anki_details_cb)
+
         # Tag Prefix
         self.tag_prefix_edit = QLineEdit(self.config.get("tag_prefix", "anki/"))
         self.tag_prefix_edit.setPlaceholderText("e.g. anki/ or leave empty")
         format_layout.addRow("Tag Prefix:", self.tag_prefix_edit)
+
+        # Max Filename Length
+        self.max_len_edit = QLineEdit(str(self.config.get("max_filename_length", 240)))
+        self.max_len_edit.setPlaceholderText("240 (OS limit is 255)")
+        format_layout.addRow("Max Filename Length:", self.max_len_edit)
 
         # Use Wikilinks for images
         self.wikilinks_cb = QCheckBox("Use Obsidian Wikilinks ![[image.png]] for images and audio")
@@ -195,15 +268,32 @@ class AnkisidianSettingsDialog(QDialog):
         self.config["target_folder"] = new_target or "Anki Notes"
         self.config["media_folder"] = self.media_edit.text().strip() or "attachments"
         self.config["copy_media"] = self.copy_media_cb.isChecked()
+        self.config["mirror_deck_hierarchy"] = self.mirror_deck_cb.isChecked()
+        self.config["daily_note_enabled"] = self.daily_note_cb.isChecked()
+        self.config["daily_note_folder"] = self.daily_folder_edit.text().strip() or "Daily Notes"
+        self.config["daily_note_heading"] = self.daily_heading_edit.text().strip() or "## Anki Reviews"
         self.config["open_in_obsidian_after_export"] = self.open_obsidian_cb.isChecked()
 
         self.config["shortcut"] = self.shortcut_edit.text().strip() or "Ctrl+Shift+O"
+        self.config["reviewer_quick_key"] = self.rev_key_edit.text().strip() or "5"
+        self.config["daily_note_shortcut"] = self.daily_shortcut_edit.text().strip() or "Ctrl+Alt+D"
         self.config["show_draggable_button"] = self.show_button_cb.isChecked()
         self.config["button_label"] = self.btn_label_edit.text().strip() or "📓 To Obsidian"
 
+        self.config["include_stats"] = self.include_stats_cb.isChecked()
         self.config["cloze_style"] = self.cloze_combo.currentData()
         self.config["frontmatter_enabled"] = self.frontmatter_cb.isChecked()
+        self.config["collapse_supplementary_fields"] = self.collapse_extra_cb.isChecked()
+        self.config["primary_fields"] = self.primary_fields_edit.text().strip() or "Front, Back, Text, Question, Answer"
+        self.config["supplementary_callout_title"] = self.callout_title_edit.text().strip() or "📑 Extra & Notes"
+        self.config["show_anki_details_callout"] = self.anki_details_cb.isChecked()
+        self.config["metadata_section_style"] = self.meta_style_combo.currentData()
+        self.config["metadata_collapsed"] = self.meta_collapsed_cb.isChecked()
         self.config["tag_prefix"] = self.tag_prefix_edit.text().strip()
+        try:
+            self.config["max_filename_length"] = max(30, min(250, int(self.max_len_edit.text().strip() or "240")))
+        except Exception:
+            self.config["max_filename_length"] = 240
         self.config["use_wikilinks"] = self.wikilinks_cb.isChecked()
 
         if self.on_save_callback:

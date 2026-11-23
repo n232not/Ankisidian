@@ -10,16 +10,34 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
-from aqt import gui_hooks, mw
-from aqt.utils import showInfo, showTooltip, tooltip
+try:
+    from aqt import gui_hooks, mw
+    from aqt.utils import showInfo, tooltip
+except ImportError:
+    gui_hooks = None
+    mw = None
+    def showInfo(*args, **kwargs): pass
+    def tooltip(*args, **kwargs): pass
 
 try:
-    from .exporter import export_note_data, get_active_anki_note
+    from .exporter import (
+        append_to_daily_note,
+        export_note_data,
+        extract_card_stats,
+        get_active_anki_note,
+    )
+    from .flag_dialog import AnkisidianFlagExportDialog
     from .floating_button import DraggableObsidianButton
     from .menu import AnkisidianMenuManager
     from .settings_dialog import AnkisidianSettingsDialog
 except (ImportError, ValueError):
-    from exporter import export_note_data, get_active_anki_note
+    from exporter import (
+        append_to_daily_note,
+        export_note_data,
+        extract_card_stats,
+        get_active_anki_note,
+    )
+    from flag_dialog import AnkisidianFlagExportDialog
     from floating_button import DraggableObsidianButton
     from menu import AnkisidianMenuManager
     from settings_dialog import AnkisidianSettingsDialog
@@ -39,6 +57,14 @@ def load_config() -> Dict[str, Any]:
         "target_folder": "Anki Notes",
         "media_folder": "attachments",
         "copy_media": True,
+        "mirror_deck_hierarchy": False,
+        "daily_note_enabled": True,
+        "daily_note_folder": "Daily Notes",
+        "daily_note_format": "%Y-%m-%d",
+        "daily_note_heading": "## Anki Reviews",
+        "daily_note_shortcut": "Ctrl+Alt+D",
+        "reviewer_quick_key": "5",
+        "reviewer_daily_key": "",
         "shortcut": "Ctrl+Shift+O",
         "show_top_menu": True,
         "show_draggable_button": True,
@@ -46,9 +72,20 @@ def load_config() -> Dict[str, Any]:
         "button_position": [20, 80],
         "open_in_obsidian_after_export": False,
         "frontmatter_enabled": True,
+        "primary_fields": "Front, Back, Text, Question, Answer",
+        "collapse_supplementary_fields": True,
+        "supplementary_callout_title": "📑 Extra & Notes",
+        "supplementary_callout_type": "note",
+        "show_anki_details_callout": False,
+        "metadata_section_enabled": False,
+        "metadata_section_style": "callout",
+        "metadata_collapsed": True,
+        "metadata_position": "top",
+        "include_stats": True,
         "tag_prefix": "anki/",
         "cloze_style": "highlight",
         "use_wikilinks": True,
+        "max_filename_length": 240,
         "file_naming": "{title}",
     }
 
@@ -211,7 +248,12 @@ def transfer_current_note():
     if hasattr(mw.col, "media") and hasattr(mw.col.media, "dir"):
         media_dir = mw.col.media.dir()
 
-    # 4. Perform export
+    # 4. Extract Card Stats if enabled
+    card_stats = None
+    if _config.get("include_stats", True) and card:
+        card_stats = extract_card_stats(card, mw.col)
+
+    # 5. Perform export
     res = export_note_data(
         note_id=note_id,
         card_id=card_id,
@@ -221,6 +263,7 @@ def transfer_current_note():
         fields=fields,
         anki_media_dir=media_dir,
         config=_config,
+        card_stats=card_stats,
     )
 
     if res.get("success"):
@@ -236,11 +279,81 @@ def transfer_current_note():
         )
 
 
-def on_browser_menus_init(browser: Any):
-    """Adds 'Transfer to Obsidian' action to Browser menu."""
-    from aqt.qt import QAction
+def append_current_note_to_daily():
+    """
+    Appends the currently active card/note into today's Obsidian Daily Note.
+    """
+    global _config
 
-    action = QAction("Ankisidian: Transfer Selected Note(s) to Obsidian", browser)
+    if not mw:
+        return
+
+    vault_path = _config.get("vault_path", "").strip()
+    if not vault_path:
+        showInfo(
+            "Please configure your Obsidian Vault path before appending to Daily Note.",
+            parent=mw,
+            title="Ankisidian Setup",
+        )
+        open_settings_dialog()
+        return
+
+    note, card, context = get_active_anki_note(mw)
+    if not note:
+        tooltip("⚠️ No active note found to append.", period=2500)
+        return
+
+    note_id = note.id
+    card_id = card.id if card else None
+
+    deck_name = "Default"
+    if card and hasattr(card, "did"):
+        deck_name = mw.col.decks.name(card.did)
+    elif hasattr(note, "cards") and note.cards():
+        deck_name = mw.col.decks.name(note.cards()[0].did)
+
+    model_name = note.note_type().get("name", "Unknown") if hasattr(note, "note_type") else "Unknown"
+    card_stats = extract_card_stats(card, mw.col) if _config.get("include_stats", True) else None
+    media_dir = mw.col.media.dir() if hasattr(mw.col, "media") and hasattr(mw.col.media, "dir") else None
+
+    res = append_to_daily_note(
+        note_id=note_id,
+        card_id=card_id,
+        deck_name=deck_name,
+        model_name=model_name,
+        tags=list(note.tags),
+        fields=list(note.items()),
+        card_stats=card_stats,
+        anki_media_dir=media_dir,
+        config=_config,
+    )
+
+    if res.get("success"):
+        if res.get("already_appended"):
+            tooltip(f"ℹ️ Note was already in Daily Note: {res.get('filename')}", period=2500)
+        else:
+            tooltip(f"📅 Appended to Daily Note: {res.get('filename')}", period=2500)
+    else:
+        showInfo(
+            f"Failed to append to Daily Note:\n{res.get('error')}",
+            parent=mw,
+            title="Ankisidian Error",
+        )
+
+
+def open_flag_export_dialog():
+    """Opens the Export Cards by Flag Color dialog."""
+    global _config
+    dialog = AnkisidianFlagExportDialog(parent=mw, mw=mw, config=_config)
+    dialog.exec()
+
+
+def on_browser_menus_init(browser: Any):
+    """Adds Ankisidian actions to the Card Browser menus and context menu."""
+    from aqt.qt import QAction, QKeySequence, QShortcut
+
+    # 1. Action: Export Selected Notes
+    export_action = QAction("Ankisidian: Transfer Selected Note(s) to Obsidian", browser)
 
     def export_browser_selection():
         selected_nids = browser.selected_notes()
@@ -257,6 +370,7 @@ def on_browser_menus_init(browser: Any):
                 c = n.cards()[0] if n.cards() else None
                 d_name = mw.col.decks.name(c.did) if c else "Default"
                 m_name = n.note_type().get("name", "Unknown") if hasattr(n, "note_type") else "Unknown"
+                c_stats = extract_card_stats(c, mw.col) if _config.get("include_stats", True) and c else None
 
                 r = export_note_data(
                     note_id=n.id,
@@ -267,6 +381,7 @@ def on_browser_menus_init(browser: Any):
                     fields=list(n.items()),
                     anki_media_dir=media_dir,
                     config=_config,
+                    card_stats=c_stats,
                 )
                 if r.get("success"):
                     count += 1
@@ -275,17 +390,87 @@ def on_browser_menus_init(browser: Any):
 
         tooltip(f"💎 Transferred {count} note(s) to Obsidian!", period=3000)
 
-    action.triggered.connect(export_browser_selection)
+    export_action.triggered.connect(export_browser_selection)
 
-    # Add to Edit or Cards menu in browser
-    if hasattr(browser, "form") and hasattr(browser.form, "menuEdit"):
-        browser.form.menuEdit.addAction(action)
+    # Browser shortcut (Ctrl+Shift+O / Cmd+Shift+O)
+    try:
+        browser_shortcut = QShortcut(QKeySequence(_config.get("shortcut", "Ctrl+Shift+O")), browser)
+        browser_shortcut.activated.connect(export_browser_selection)
+    except Exception:
+        pass
+
+    # 2. Action: Append Selected Notes to Daily Note
+    daily_action = QAction("Ankisidian: Append Selected Note(s) to Daily Note", browser)
+
+    def append_browser_selection():
+        selected_nids = browser.selected_notes()
+        if not selected_nids:
+            tooltip("No notes selected in Browser.", period=2000)
+            return
+
+        count = 0
+        media_dir = mw.col.media.dir() if hasattr(mw.col, "media") else None
+
+        for nid in selected_nids:
+            try:
+                n = mw.col.get_note(nid)
+                c = n.cards()[0] if n.cards() else None
+                d_name = mw.col.decks.name(c.did) if c else "Default"
+                m_name = n.note_type().get("name", "Unknown") if hasattr(n, "note_type") else "Unknown"
+                c_stats = extract_card_stats(c, mw.col) if _config.get("include_stats", True) and c else None
+
+                r = append_to_daily_note(
+                    note_id=n.id,
+                    card_id=c.id if c else None,
+                    deck_name=d_name,
+                    model_name=m_name,
+                    tags=list(n.tags),
+                    fields=list(n.items()),
+                    card_stats=c_stats,
+                    anki_media_dir=media_dir,
+                    config=_config,
+                )
+                if r.get("success"):
+                    count += 1
+            except Exception as e:
+                print(f"[Ankisidian] Error appending note {nid}: {e}")
+
+        tooltip(f"📅 Appended {count} note(s) to Daily Note!", period=3000)
+
+    daily_action.triggered.connect(append_browser_selection)
+
+    # 3. Action: Export Flagged Cards Dialog
+    flag_action = QAction("Ankisidian: Export Cards by Flag Color...", browser)
+    flag_action.triggered.connect(open_flag_export_dialog)
+
+    # Add to Edit and Cards menus in browser
+    if hasattr(browser, "form"):
+        if hasattr(browser.form, "menuEdit"):
+            browser.form.menuEdit.addSeparator()
+            browser.form.menuEdit.addAction(export_action)
+            browser.form.menuEdit.addAction(daily_action)
+            browser.form.menuEdit.addAction(flag_action)
 
 
 def on_reviewer_did_show_question(card: Any):
-    """Ensures floating button is raised on question display."""
+    """Ensures floating button is raised on question display if enabled."""
     if _floating_button and _config.get("show_draggable_button", True):
         _floating_button.raise_()
+
+
+def on_state_shortcuts_will_change(state: str, shortcuts: list[tuple[str, Any]]):
+    """
+    Injects single-key review shortcuts (e.g. '5' to transfer to Obsidian)
+    directly into Anki's reviewer.
+    """
+    if state == "review":
+        rev_key = _config.get("reviewer_quick_key", "5").strip()
+        if rev_key:
+            shortcuts.append((rev_key, transfer_current_note))
+
+        daily_key = _config.get("reviewer_daily_key", "").strip()
+        if daily_key:
+            shortcuts.append((daily_key, append_current_note_to_daily))
 
 
 def init_addon():
@@ -302,6 +487,8 @@ def init_addon():
     _menu_manager = AnkisidianMenuManager(
         mw=mw,
         on_export=transfer_current_note,
+        on_daily_export=append_current_note_to_daily,
+        on_flag_export=open_flag_export_dialog,
         on_settings=open_settings_dialog,
         on_toggle_button=toggle_floating_button,
         config=_config,
@@ -313,8 +500,9 @@ def init_addon():
     # Hooks
     gui_hooks.browser_menus_did_init.append(on_browser_menus_init)
     gui_hooks.reviewer_did_show_question.append(on_reviewer_did_show_question)
+    gui_hooks.state_shortcuts_will_change.append(on_state_shortcuts_will_change)
 
 
 # Register startup hook
-if mw:
+if mw and gui_hooks:
     gui_hooks.profile_did_open.append(init_addon)

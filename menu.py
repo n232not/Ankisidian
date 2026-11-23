@@ -27,48 +27,64 @@ class AnkisidianMenuManager:
         self,
         mw: Any,
         on_export: Callable[[], None],
+        on_daily_export: Callable[[], None],
+        on_flag_export: Callable[[], None],
         on_settings: Callable[[], None],
         on_toggle_button: Callable[[], None],
         config: Dict[str, Any],
     ):
         self.mw = mw
         self.on_export = on_export
+        self.on_daily_export = on_daily_export
+        self.on_flag_export = on_flag_export
         self.on_settings = on_settings
         self.on_toggle_button = on_toggle_button
         self.config = config
 
         self.shortcut_obj: Optional[QShortcut] = None
+        self.daily_shortcut_obj: Optional[QShortcut] = None
         self.top_menu: Optional[QMenu] = None
         self.export_action: Optional[QAction] = None
+        self.daily_action: Optional[QAction] = None
         self.toggle_button_action: Optional[QAction] = None
 
-        self._setup_shortcut()
+        self._setup_shortcuts()
         self._setup_top_menu()
         self._setup_tools_menu()
 
     def _get_shortcut_sequence(self) -> str:
         shortcut = self.config.get("shortcut", "").strip()
-        if not shortcut:
-            # Default shortcut
-            shortcut = "Ctrl+Shift+O"
+        return shortcut if shortcut else "Ctrl+Shift+O"
 
-        # On macOS, if user wrote Ctrl+Shift+O or Cmd+Shift+O, Qt handles standard sequences
-        return shortcut
+    def _get_daily_shortcut_sequence(self) -> str:
+        shortcut = self.config.get("daily_note_shortcut", "").strip()
+        return shortcut if shortcut else "Ctrl+Alt+D"
 
-    def _setup_shortcut(self):
+    def _setup_shortcuts(self):
         if not self.mw:
             return
 
+        # 1. Main Transfer Shortcut
         shortcut_str = self._get_shortcut_sequence()
         try:
             if self.shortcut_obj:
                 self.shortcut_obj.setEnabled(False)
                 self.shortcut_obj.deleteLater()
-
             self.shortcut_obj = QShortcut(QKeySequence(shortcut_str), self.mw)
             self.shortcut_obj.activated.connect(self.on_export)
         except Exception as e:
             print(f"[Ankisidian] Failed to register shortcut {shortcut_str}: {e}")
+
+        # 2. Daily Note Shortcut
+        daily_shortcut_str = self._get_daily_shortcut_sequence()
+        try:
+            if self.daily_shortcut_obj:
+                self.daily_shortcut_obj.setEnabled(False)
+                self.daily_shortcut_obj.deleteLater()
+            self.daily_shortcut_obj = QShortcut(QKeySequence(daily_shortcut_str), self.mw)
+            self.daily_shortcut_obj.activated.connect(self.on_daily_export)
+        except Exception as e:
+            print(f"[Ankisidian] Failed to register daily shortcut {daily_shortcut_str}: {e}")
 
     def _setup_top_menu(self):
         """Adds a top-level 'Ankisidian' menu in Anki's main menu bar."""
@@ -86,9 +102,20 @@ class AnkisidianMenuManager:
         self.export_action.triggered.connect(self.on_export)
         self.top_menu.addAction(self.export_action)
 
+        # 2. Append to Daily Note Action
+        daily_shortcut_str = self._get_daily_shortcut_sequence()
+        self.daily_action = QAction(f"Append Current Note to Daily Note\t({daily_shortcut_str})", self.mw)
+        self.daily_action.triggered.connect(self.on_daily_export)
+        self.top_menu.addAction(self.daily_action)
+
+        # 3. Export by Flag Action
+        flag_action = QAction("🚩 Export Cards by Flag Color...", self.mw)
+        flag_action.triggered.connect(self.on_flag_export)
+        self.top_menu.addAction(flag_action)
+
         self.top_menu.addSeparator()
 
-        # 2. Toggle Floating Button
+        # 4. Toggle Floating Button
         show_btn = self.config.get("show_draggable_button", True)
         self.toggle_button_action = QAction("Show Draggable Floating Button", self.mw)
         self.toggle_button_action.setCheckable(True)
@@ -98,13 +125,13 @@ class AnkisidianMenuManager:
 
         self.top_menu.addSeparator()
 
-        # 3. Settings Action
+        # 5. Settings Action
         settings_action = QAction("⚙️ Ankisidian Settings...", self.mw)
         settings_action.triggered.connect(self.on_settings)
         self.top_menu.addAction(settings_action)
 
     def _setup_tools_menu(self):
-        """Also adds an action into the Tools menu for convenience."""
+        """Also adds actions into the Tools menu for convenience."""
         if not self.mw or not hasattr(self.mw, "form") or not hasattr(self.mw.form, "menuTools"):
             return
 
@@ -113,11 +140,22 @@ class AnkisidianMenuManager:
         tools_action.triggered.connect(self.on_export)
         tools_menu.addAction(tools_action)
 
+        daily_action = QAction("Ankisidian: Append to Daily Note", self.mw)
+        daily_action.triggered.connect(self.on_daily_export)
+        tools_menu.addAction(daily_action)
+
+        flag_action = QAction("Ankisidian: Export Cards by Flag...", self.mw)
+        flag_action.triggered.connect(self.on_flag_export)
+        tools_menu.addAction(flag_action)
+
     def update_config(self, new_config: Dict[str, Any]):
         self.config = new_config
-        self._setup_shortcut()
+        self._setup_shortcuts()
         if self.toggle_button_action:
             self.toggle_button_action.setChecked(self.config.get("show_draggable_button", True))
         if self.export_action:
             shortcut_str = self._get_shortcut_sequence()
             self.export_action.setText(f"Transfer Current Note to Obsidian\t({shortcut_str})")
+        if self.daily_action:
+            daily_str = self._get_daily_shortcut_sequence()
+            self.daily_action.setText(f"Append Current Note to Daily Note\t({daily_str})")

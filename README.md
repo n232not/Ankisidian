@@ -21,6 +21,21 @@ Transfer notes with a **keyboard shortcut**, an option in the **top menu bar**, 
 - 🖼️ **Automatic Media Copying**:
   - Images (`<img src="...">`) and audio files (`[sound:...]`) referenced on the card are automatically copied to your Obsidian vault's attachments folder.
   - Generates Obsidian native wikilinks (`![[image.png]]`) or standard Markdown links.
+- 📊 **Spaced Repetition Review Stats (Dataview Ready)**:
+  - Automatically captures review statistics: **Interval** (e.g. `21d`), **Ease Factor** (e.g. `250%`), **Reviews count** (`reps`), **Lapse count** (`lapses`), **Card State** (`New`, `Learning`, `Review`, `Suspended`), **Due Date**, and **Color Flag**.
+  - Populated in YAML frontmatter (for Obsidian Dataview tables/queries) and inside the collapsible metadata section.
+- 🌳 **Mirror Deck Hierarchy into Obsidian Subfolders (Optional)**:
+  - Organizes notes according to your Anki decks: `Medicine::Cardiology::Arrhythmias` creates `ObsidianVault/Anki Notes/Medicine/Cardiology/Arrhythmias/Card.md`.
+- 📅 **Append to Today's Daily Note (Optional)**:
+  - With a single keybind (<kbd>Ctrl+Alt+D</kbd> / <kbd>Cmd+Option+D</kbd>) or menu click, appends the card directly into today's Obsidian Daily Note under `## Anki Reviews`.
+- 🚩 **Batch Export by Flag Color**:
+  - Export cards by flag (Red, Orange, Green, Blue, Pink, Turquoise, Purple, or Any Flag) across your whole collection or current deck.
+- 🎛️ **Keybind-Only Mode (Hide Floating Button)**:
+  - Prefer a clean interface without on-screen buttons? Turn off the floating button in Settings to use purely keyboard shortcuts!
+- 📁 **Minimizable Supplementary Fields (Extra, Missed Questions, Lecture Notes)**:
+  - Keeps your notes clean: the core card text (`Front`/`Back` or `Text`) renders directly in the note body.
+  - All auxiliary fields like `Extra`, `Missed Questions`, `Lecture Notes`, `Pathoma`, `First Aid`, etc. are neatly grouped inside a separate **collapsible callout** (`> [!note]- 📑 Extra & Notes`) that is folded by default!
+  - No redundant Anki metadata boxes cluttering the body — all Anki details (deck, model, card ID, ease, interval, reps, lapses, state) live cleanly in the YAML frontmatter and tags!
 - 🏷️ **YAML Frontmatter & Metadata**:
   - Includes note ID, card ID, deck name, note type/model, tags, created timestamp, and updated timestamp.
 - 🔗 **Two-Way Linking**:
@@ -71,7 +86,9 @@ Then in Anki:
 
 2. **Transferring a Note**:
    - While reviewing a card in Anki:
-     - Press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> (or <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> on macOS).
+     - **Press <kbd>5</kbd>** on your keyboard! (1-4 answer the card, **5** sends it to Obsidian).
+     - **OR** press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> (or <kbd>Cmd</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd> on macOS).
+     - **OR** press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>D</kbd> (or <kbd>Cmd</kbd> + <kbd>Option</kbd> + <kbd>D</kbd>) to append to your Daily Note.
      - **OR** click the `📓 To Obsidian` floating button.
      - **OR** select **Ankisidian** → **Transfer Current Note to Obsidian** from the top menu bar.
    - A brief notification (`💎 Transferred to Obsidian: Note Title.md`) will appear confirming the export.
@@ -100,10 +117,16 @@ Accessible via **Ankisidian** → **⚙️ Ankisidian Settings...** or Anki's Ad
 | `target_folder` | `"Anki Notes"` | Folder inside your vault where exported notes are saved. |
 | `media_folder` | `"attachments"` | Subfolder inside your vault where card images and audio are copied. |
 | `copy_media` | `true` | Automatically copy images and sounds referenced by notes. |
-| `shortcut` | `"Ctrl+Shift+O"` | Keyboard shortcut to trigger export. |
-| `show_draggable_button` | `true` | Enable or disable the floating draggable button. |
+| `mirror_deck_hierarchy` | `false` | Mirror Anki subdecks into nested Obsidian subfolders. |
+| `daily_note_enabled` | `true` | Enable "Append to Daily Note" feature. |
+| `daily_note_folder` | `"Daily Notes"` | Subfolder for daily notes in vault (or empty for root). |
+| `daily_note_heading` | `"## Anki Reviews"` | Heading inside daily note to append reviews under. |
+| `daily_note_shortcut` | `"Ctrl+Alt+D"` | Keyboard shortcut to append to daily note. |
+| `shortcut` | `"Ctrl+Shift+O"` | Keyboard shortcut to transfer note as a standalone file. |
+| `show_draggable_button` | `true` | Show floating draggable button (turn off for keybind-only mode). |
 | `button_label` | `"📓 To Obsidian"` | Text displayed on the floating button. |
 | `button_position` | `[20, 80]` | Saved `[x, y]` coordinates of the floating button. |
+| `include_stats` | `true` | Include spaced repetition review stats (Interval, Ease, Reps, Lapses, Due). |
 | `cloze_style` | `"highlight"` | Format for clozes: `highlight` (`==ans==`), `bold` (`**ans**`), `keep`, or `spoiler`. |
 | `open_in_obsidian_after_export` | `false` | Automatically reveal/open the note in Obsidian after export. |
 | `frontmatter_enabled` | `true` | Add YAML metadata block at the top of each note. |
@@ -122,6 +145,11 @@ anki_note_id: 1718000000000
 anki_card_id: 1718000000001
 anki_deck: "Biology::Cell Biology"
 anki_model: "Basic"
+anki_ease: "250%"
+anki_interval_days: 21
+anki_reps: 5
+anki_lapses: 0
+anki_state: "Review"
 tags:
   - anki
   - anki/biology
@@ -140,8 +168,17 @@ What is the primary function of the **mitochondria**?
 ## Back
 The mitochondria is known as the powerhouse of the cell. It generates most of the chemical energy needed to power the cell's biochemical reactions via ATP production.
 
----
-
+> [!note]- 📑 Extra & Notes
+> #### Extra
+> Contains its own circular DNA and reproduces independently via binary fission.
+>
+> #### Missed Questions
+> Which organelle originated from an endosymbiotic alpha-proteobacterium?
+>
+> #### Lecture Notes
+> Prof. Davis emphasized this on slide 14 of the Bioenergetics lecture.
+>
+> ---
 > 🔗 [Open in Anki (nid:1718000000000)](anki://search?q=nid:1718000000000)
 ```
 
